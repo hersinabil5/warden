@@ -23,3 +23,17 @@ revoke its app-scoped sessions (track them together in Redis).
 **Decision:** Opaque 256-bit session ID in the cookie; Redis key is SHA-256 of the ID.
 
 **Consequences:** Redis is a hard dependency. A Redis read leak doesn't yield usable cookies.
+
+## D3: `slog.SetDefault` only in `main`
+
+**Context:** "No global mutable state" means loggers are passed explicitly. Third-party
+libraries (and the standard library) still log through the process-wide default logger,
+which would otherwise emit plain text.
+
+**Decision:** `cmd/warden/main.go` installs the configured JSON logger as the slog default,
+exactly once at startup. Internal packages never read or write the default; they take a
+`*slog.Logger` as a dependency. `run()` receives the install step as a callback, so tests
+don't touch the global.
+
+**Consequences:** All process output is JSON. Tests can run in parallel without racing on
+the default logger.
