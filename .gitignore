@@ -1,0 +1,15 @@
+/bin/
+/var/
+.env
+deploy/certs/
+config/warden.dev.yaml
+web/admin/node_modules/
+web/admin/dist/
+*.test
+*.out
+testdata/fuzz/**/corpus-tmp/
+.DS_Store
+CLAUDE.md
+.claude/
+PLAN.md
+docs/SETUP.md

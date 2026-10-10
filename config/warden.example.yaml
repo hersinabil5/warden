@@ -1,0 +1,64 @@
+# Canonical example config. Keep in sync with internal/config structs.
+# Copy to config/warden.dev.yaml for local use.
+
+listen: ":8443"
+http_redirect_listen: ":8080"   # plain HTTP, redirects to HTTPS
+
+tls:
+  cert_file: deploy/certs/warden.pem
+  key_file: deploy/certs/warden-key.pem
+
+auth:
+  domain: auth.warden.localhost          # central auth host (login, callback, admin)
+  issuer: http://localhost:8180/realms/warden
+  client_id: warden-proxy
+  client_secret_env: WARDEN_CLIENT_SECRET
+  scopes: [openid, email, profile]
+  groups_claim: groups
+  group_refresh_interval: 5m
+
+session:
+  redis_addr: localhost:6379
+  cookie_name: _warden
+  absolute_ttl: 8h
+  idle_timeout: 1h
+
+identity:
+  header: X-Warden-Identity
+  signing_key_file: deploy/certs/identity-signing-key.pem   # ES256 private key
+  ttl: 60s
+
+strip_headers:            # in addition to the built-in list
+  - X-Remote-User
+
+audit:
+  sink: file              # file | stdout
+  file: var/audit.jsonl
+
+routes:
+  - host: whoami.warden.localhost
+    upstream: http://127.0.0.1:9001
+    policy:
+      allow:
+        - authenticated: true
+
+  - host: grafana.warden.localhost
+    upstream: http://127.0.0.1:9002
+    policy:
+      allow:
+        - groups: [sre, admins]
+      paths:
+        - prefix: /admin
+          allow:
+            - groups: [admins]
+              require_mfa_within: 10m
+
+  - host: app.warden.localhost
+    upstream: https://127.0.0.1:9003      # examples/upstream, mTLS from M4
+    upstream_tls:
+      ca_file: deploy/certs/internal-ca.pem
+      client_cert_file: deploy/certs/warden-client.pem
+      client_key_file: deploy/certs/warden-client-key.pem
+    policy:
+      allow:
+        - email_domains: [warden.local]
