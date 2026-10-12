@@ -4,11 +4,22 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"flag"
 	"io"
 	"log/slog"
+	"math/big"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -54,7 +65,7 @@ auth:
   groups_claim: groups
   group_refresh_interval: 5m
 session: {redis_addr: "localhost:6379", cookie_name: _warden, absolute_ttl: 8h, idle_timeout: 1h}
-identity: {header: X-Warden-Identity, signing_key_file: key.pem, ttl: 60s}
+identity: {header: X-Warden-Identity, signing_key_file: signing.pem, ttl: 60s}
 audit: {sink: stdout}
 routes:
   - host: app.example.test
@@ -71,9 +82,79 @@ func testGetenv(name string) string {
 	return ""
 }
 
+// testEnv is a runnable config: free loopback ports and a real certificate.
+type testEnv struct {
+	path, httpsAddr, redirectAddr string
+	pool                          *x509.CertPool
+}
+
+// writeConfig writes minimalConfig with free ports and a generated cert.
 func writeConfig(t *testing.T) string {
 	t.Helper()
-	return writeConfigContent(t, minimalConfig)
+	return newTestEnv(t, minimalConfig).path
+}
+
+// newTestEnv makes content runnable: it swaps in free loopback ports (adding a
+// redirect listener) and a freshly generated certificate.
+func newTestEnv(t *testing.T, content string) testEnv {
+	t.Helper()
+	dir := t.TempDir()
+	certPath, keyPath, pool := writeTestCert(t, dir)
+	env := testEnv{httpsAddr: freeAddr(t), redirectAddr: freeAddr(t), pool: pool}
+	content = strings.NewReplacer(
+		`listen: ":8443"`, `listen: "`+env.httpsAddr+`"`+"\nhttp_redirect_listen: \""+env.redirectAddr+`"`,
+		"cert_file: cert.pem", "cert_file: "+certPath,
+		"key_file: key.pem", "key_file: "+keyPath,
+	).Replace(content)
+	env.path = writeConfigContent(t, content)
+	return env
+}
+
+func freeAddr(t *testing.T) string {
+	t.Helper()
+	var lc net.ListenConfig
+	ln, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	return ln.Addr().String()
+}
+
+func writeTestCert(t *testing.T, dir string) (certPath, keyPath string, pool *x509.CertPool) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "app.example.test"},
+		DNSNames:     []string{"app.example.test", "auth.example.test"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPath, keyPath = filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem")
+	if err := os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	leaf, _ := x509.ParseCertificate(der)
+	pool = x509.NewCertPool()
+	pool.AddCert(leaf)
+	return certPath, keyPath, pool
 }
 
 func writeConfigContent(t *testing.T, content string) string {
@@ -404,3 +485,144 @@ func waitFor(t *testing.T, cond func() bool) {
 }
 
 var _ io.Writer = (*syncBuffer)(nil)
+
+// startRun runs warden in the background until the test ends and waits for
+// it to log startup.
+func startRun(t *testing.T, args ...string) *syncBuffer {
+	t.Helper()
+	var out syncBuffer
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- run(ctx, args, &out, testGetenv, nil) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("run: %v\n%s", err, out.String())
+		}
+	})
+	waitFor(t, func() bool { return strings.Contains(out.String(), "warden starting") })
+	return &out
+}
+
+// clientFor returns an HTTP client that resolves every host to addr, trusts
+// pool, and does not follow redirects.
+func clientFor(addr string, pool *x509.CertPool) *http.Client {
+	var d net.Dialer
+	return &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return d.DialContext(ctx, network, addr)
+			},
+			TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
+		},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+}
+
+type response struct {
+	StatusCode int
+	Header     http.Header
+	Body       string
+}
+
+// get performs a GET and returns the response with its body fully read.
+func get(t *testing.T, c *http.Client, url string) response {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return response{resp.StatusCode, resp.Header, string(body)}
+}
+
+func TestRunServesHTTPSAndRedirects(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "hello from upstream")
+	}))
+	defer upstream.Close()
+	env := newTestEnv(t, strings.Replace(minimalConfig, "http://127.0.0.1:9001", upstream.URL, 1))
+	startRun(t, "-config", env.path, "-dev-allow-unauthenticated")
+
+	https := clientFor(env.httpsAddr, env.pool)
+	_, httpsPort, _ := net.SplitHostPort(env.httpsAddr)
+
+	resp := get(t, https, "https://app.example.test/")
+	if resp.StatusCode != http.StatusOK || resp.Body != "hello from upstream" {
+		t.Errorf("proxied response = %d %q", resp.StatusCode, resp.Body)
+	}
+
+	resp = get(t, https, "https://auth.example.test/")
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("auth host (no upstream yet) = %d, want 404", resp.StatusCode)
+	}
+
+	plain := clientFor(env.redirectAddr, nil)
+	resp = get(t, plain, "http://app.example.test/x?y=1")
+	want := "https://app.example.test:" + httpsPort + "/x?y=1"
+	if resp.StatusCode != http.StatusPermanentRedirect || resp.Header.Get("Location") != want {
+		t.Errorf("redirect = %d %q, want 308 %q", resp.StatusCode, resp.Header.Get("Location"), want)
+	}
+	resp = get(t, plain, "http://evil.example/")
+	if resp.StatusCode != http.StatusBadRequest || resp.Header.Get("Location") != "" {
+		t.Errorf("unknown host redirect = %d %q, want 400 and no Location", resp.StatusCode, resp.Header.Get("Location"))
+	}
+}
+
+func TestRunDeniesByDefault(t *testing.T) {
+	env := newTestEnv(t, minimalConfig)
+	startRun(t, "-config", env.path)
+	resp := get(t, clientFor(env.httpsAddr, env.pool), "https://app.example.test/")
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 without the dev flag", resp.StatusCode)
+	}
+}
+
+func TestRunStartupFailures(t *testing.T) {
+	missingCert := newTestEnv(t, strings.Replace(minimalConfig, "cert_file: cert.pem", "cert_file: /nonexistent/cert.pem", 1))
+	// The loopback check runs before anything is bound, so 0.0.0.0 is never opened.
+	publicListen := newTestEnv(t, strings.Replace(minimalConfig, `listen: ":8443"`, `listen: "0.0.0.0:8443"`, 1)).path
+
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{"missing certificate", []string{"-config", missingCert.path}, "loading TLS certificate"},
+		{"dev flag on public listener", []string{"-config", publicListen, "-dev-allow-unauthenticated"}, "loopback"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out syncBuffer
+			err := run(t.Context(), tt.args, &out, testGetenv, nil)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("err = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestRunFailsWhenPortTaken(t *testing.T) {
+	env := newTestEnv(t, minimalConfig)
+	var lc net.ListenConfig
+	ln, err := lc.Listen(t.Context(), "tcp", env.httpsAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+
+	var out syncBuffer
+	err = run(t.Context(), []string{"-config", env.path}, &out, testGetenv, nil)
+	if err == nil || !strings.Contains(err.Error(), "listening on") {
+		t.Fatalf("err = %v, want listen error", err)
+	}
+}

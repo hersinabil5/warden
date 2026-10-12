@@ -29,7 +29,7 @@ run:
 	@test -f $(DEV_CONFIG) || { \
 		echo "missing $(DEV_CONFIG); create it with: cp config/warden.example.yaml $(DEV_CONFIG)" >&2; \
 		exit 1; }
-	go run ./cmd/warden -config $(DEV_CONFIG)
+	go run ./cmd/warden -config $(DEV_CONFIG) -dev-allow-unauthenticated
 
 build:
 	go build -o bin/warden ./cmd/warden

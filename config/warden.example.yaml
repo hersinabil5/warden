@@ -2,8 +2,8 @@
 # (TestLoadExampleConfig fails if it stops loading). Unknown keys are errors.
 # Copy to config/warden.dev.yaml for local use.
 
-listen: ":8443"
-http_redirect_listen: ":8080"   # plain HTTP, redirects to HTTPS
+listen: "127.0.0.1:8443"                  # loopback for dev; use ":8443" (all interfaces) in production
+http_redirect_listen: "127.0.0.1:8080"    # optional; plain HTTP, redirects to HTTPS for configured hosts
 
 tls:
   cert_file: deploy/certs/warden.pem

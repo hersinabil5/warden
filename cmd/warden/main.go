@@ -3,18 +3,23 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"slices"
+	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/hersinabil5/warden/internal/config"
+	"github.com/hersinabil5/warden/internal/proxy"
 )
 
 // shutdownTimeout bounds how long graceful shutdown may take before giving up.
@@ -44,8 +49,9 @@ func main() {
 	}
 }
 
-// run parses flags, loads the config, sets up logging, and blocks until ctx is
-// cancelled, then shuts down gracefully. Logs go to logOut as JSON. getenv
+// run parses flags, loads the config, sets up logging, starts the HTTPS
+// listener (and the optional HTTP redirect listener), and blocks until ctx is
+// cancelled or a server fails, then shuts down gracefully. Logs go to logOut as JSON. getenv
 // resolves secrets named in the config. If onLogger is non-nil it receives the
 // configured logger (main uses it to install the process default).
 func run(ctx context.Context, args []string, logOut io.Writer, getenv func(string) string, onLogger func(*slog.Logger)) error {
@@ -53,6 +59,8 @@ func run(ctx context.Context, args []string, logOut io.Writer, getenv func(strin
 	fs.SetOutput(logOut)
 	configPath := fs.String("config", "", "path to the YAML config file (required)")
 	logLevel := fs.String("log-level", "info", "log level: debug, info, warn, error")
+	devUnauth := fs.Bool("dev-allow-unauthenticated", false,
+		"DEV ONLY (removed in M3): proxy requests without authentication; requires loopback listeners")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -78,15 +86,71 @@ func run(ctx context.Context, args []string, logOut io.Writer, getenv func(strin
 		onLogger(logger)
 	}
 
-	var hooks []shutdownFunc
+	cert, err := tls.LoadX509KeyPair(cfg.TLS.CertFile, cfg.TLS.KeyFile)
+	if err != nil {
+		return fmt.Errorf("loading TLS certificate: %w", err)
+	}
+	handler, err := proxy.New(cfg, proxy.Options{AllowUnauthenticated: *devUnauth, Logger: logger})
+	if err != nil {
+		return err
+	}
+	if *devUnauth {
+		logger.Warn("DEV MODE: requests are proxied WITHOUT authentication; loopback listeners only")
+	}
 
-	logger.Info("warden starting", "config", *configPath, "routes", len(cfg.Routes))
-	<-ctx.Done()
+	var hooks []shutdownFunc
+	serveErr := make(chan error, 2)
+	serve := func(name string, srv *http.Server, fn func() error) {
+		hooks = append(hooks, srv.Shutdown)
+		go func() {
+			if srvErr := fn(); !errors.Is(srvErr, http.ErrServerClosed) {
+				serveErr <- fmt.Errorf("%s server: %w", name, srvErr)
+			}
+		}()
+	}
+	var lc net.ListenConfig
+
+	httpsLn, err := lc.Listen(ctx, "tcp", cfg.Listen)
+	if err != nil {
+		return fmt.Errorf("listening on %s: %w", cfg.Listen, err)
+	}
+	httpsSrv := proxy.NewServer(handler, proxy.DefaultServerTimeouts, logger)
+	httpsSrv.TLSConfig = proxy.NewTLSConfig(cert)
+	serve("https", httpsSrv, func() error { return httpsSrv.ServeTLS(httpsLn, "", "") })
+	startAttrs := []any{"config", *configPath, "routes", len(cfg.Routes), "https", httpsLn.Addr().String()}
+
+	if cfg.HTTPRedirectListen != "" {
+		redirLn, listenErr := lc.Listen(ctx, "tcp", cfg.HTTPRedirectListen)
+		if listenErr != nil {
+			_ = shutdown(shutdownTimeout, hooks)
+			return fmt.Errorf("listening on %s: %w", cfg.HTTPRedirectListen, listenErr)
+		}
+		_, portStr, _ := net.SplitHostPort(cfg.Listen) // validated by config
+		httpsPort, _ := strconv.Atoi(portStr)
+		hosts := []string{cfg.Auth.Domain}
+		for _, r := range cfg.Routes {
+			hosts = append(hosts, r.Host)
+		}
+		redirSrv := proxy.NewServer(proxy.NewRedirectHandler(hosts, httpsPort, logger), proxy.DefaultServerTimeouts, logger)
+		serve("http redirect", redirSrv, func() error { return redirSrv.Serve(redirLn) })
+		startAttrs = append(startAttrs, "http_redirect", redirLn.Addr().String())
+	}
+
+	logger.Info("warden starting", startAttrs...)
+	var runErr error
+	select {
+	case <-ctx.Done():
+	case runErr = <-serveErr:
+		logger.Error("server failed", "err", runErr)
+	}
 	logger.Info("shutting down", "timeout", shutdownTimeout.String())
 
 	if err := shutdown(shutdownTimeout, hooks); err != nil {
 		logger.Error("shutdown incomplete", "err", err)
-		return err
+		return errors.Join(runErr, err)
+	}
+	if runErr != nil {
+		return runErr
 	}
 	logger.Info("warden stopped")
 	return nil
