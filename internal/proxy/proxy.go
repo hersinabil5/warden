@@ -1,6 +1,8 @@
 package proxy
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -62,7 +64,7 @@ func New(cfg *config.Config, opts Options) (*Handler, error) {
 			opts.Logger.Warn("upstream_tls is not implemented until M4; route fails closed (every request gets 502)",
 				"host", r.Host)
 		}
-		target := r.UpstreamURL
+		target, host := r.UpstreamURL, r.Host
 		h.routes[r.Host] = &httputil.ReverseProxy{
 			Rewrite: func(pr *httputil.ProxyRequest) {
 				pr.SetURL(target)
@@ -73,6 +75,9 @@ func New(cfg *config.Config, opts Options) (*Handler, error) {
 				// value the upstream sent so the client sees exactly one.
 				res.Header.Del(RequestIDHeader)
 				return nil
+			},
+			ErrorHandler: func(w http.ResponseWriter, req *http.Request, err error) {
+				h.upstreamError(w, req, host, err)
 			},
 			Transport: newTransport(tt, r.UpstreamTLS != nil),
 			ErrorLog:  slog.NewLogLogger(opts.Logger.Handler(), slog.LevelWarn),
@@ -129,6 +134,17 @@ func (h *Handler) route(w http.ResponseWriter, r *http.Request, host, id string)
 		return
 	}
 	rp.ServeHTTP(w, r)
+}
+
+// upstreamError logs the real cause and shows the client a generic 502 page.
+func (h *Handler) upstreamError(w http.ResponseWriter, r *http.Request, host string, err error) {
+	id := RequestID(r.Context())
+	level := slog.LevelWarn
+	if errors.Is(err, context.Canceled) {
+		level = slog.LevelDebug // the client went away; not an upstream fault
+	}
+	h.logger.Log(r.Context(), level, "upstream error", "request_id", id, "host", host, "err", err)
+	writePage(w, http.StatusBadGateway, id)
 }
 
 func isLoopbackAddr(hostport string) bool {
