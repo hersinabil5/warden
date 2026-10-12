@@ -37,10 +37,49 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
+const (
+	testSecretEnv = "WARDEN_TEST_CLIENT_SECRET"
+	testSecret    = "super-secret-value-do-not-log"
+)
+
+// minimalConfig is a small valid config; internal/config tests cover validation.
+const minimalConfig = `listen: ":8443"
+tls: {cert_file: cert.pem, key_file: key.pem}
+auth:
+  domain: auth.example.test
+  issuer: https://idp.example.test/realms/warden
+  client_id: warden-proxy
+  client_secret_env: ` + testSecretEnv + `
+  scopes: [openid]
+  groups_claim: groups
+  group_refresh_interval: 5m
+session: {redis_addr: "localhost:6379", cookie_name: _warden, absolute_ttl: 8h, idle_timeout: 1h}
+identity: {header: X-Warden-Identity, signing_key_file: key.pem, ttl: 60s}
+audit: {sink: stdout}
+routes:
+  - host: app.example.test
+    upstream: http://127.0.0.1:9001
+    policy:
+      allow:
+        - authenticated: true
+`
+
+func testGetenv(name string) string {
+	if name == testSecretEnv {
+		return testSecret
+	}
+	return ""
+}
+
 func writeConfig(t *testing.T) string {
 	t.Helper()
+	return writeConfigContent(t, minimalConfig)
+}
+
+func writeConfigContent(t *testing.T, content string) string {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "warden.yaml")
-	if err := os.WriteFile(path, []byte("listen: \":8443\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return path
@@ -91,6 +130,9 @@ func TestRunRejectsBadInvocation(t *testing.T) {
 		{"unknown flag", []string{"-config", writeConfig(t), "-bogus"}, "bogus"},
 		{"invalid log level", []string{"-config", writeConfig(t), "-log-level", "loud"}, "log-level"},
 		{"positional args", []string{"-config", writeConfig(t), "extra"}, "unexpected argument"},
+		{"invalid YAML", []string{"-config", writeConfigContent(t, "listen: [\n")}, "parsing YAML"},
+		{"unknown field", []string{"-config", writeConfigContent(t, minimalConfig+"bogus: 1\n")}, "bogus"},
+		{"fails validation", []string{"-config", writeConfigContent(t, strings.Replace(minimalConfig, "upstream: http://", "upstream: ftp://", 1))}, "routes[0].upstream"},
 	}
 	if os.Getuid() != 0 { // root can read mode-000 files
 		tests = append(tests, struct {
@@ -106,7 +148,7 @@ func TestRunRejectsBadInvocation(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 
-			err := run(ctx, tt.args, &out, nil)
+			err := run(ctx, tt.args, &out, testGetenv, nil)
 			if err == nil {
 				t.Fatal("run succeeded, want error")
 			}
@@ -122,7 +164,7 @@ func TestRunRejectsBadInvocation(t *testing.T) {
 
 func TestRunHelpIsNotAFailure(t *testing.T) {
 	var out syncBuffer
-	err := run(context.Background(), []string{"-h"}, &out, nil)
+	err := run(context.Background(), []string{"-h"}, &out, testGetenv, nil)
 	if !errors.Is(err, flag.ErrHelp) {
 		t.Fatalf("err = %v, want flag.ErrHelp", err)
 	}
@@ -135,7 +177,7 @@ func TestRunStartsAndStopsOnCancel(t *testing.T) {
 	var installed bool
 	done := make(chan error, 1)
 	go func() {
-		done <- run(ctx, []string{"-config", writeConfig(t)}, &out, func(l *slog.Logger) {
+		done <- run(ctx, []string{"-config", writeConfig(t)}, &out, testGetenv, func(l *slog.Logger) {
 			installed = l != nil
 		})
 	}()
@@ -173,7 +215,7 @@ func TestRunLogLevelFiltersDebug(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // return right after startup
 
-	if err := run(ctx, []string{"-config", writeConfig(t), "-log-level", "warn"}, &out, nil); err != nil {
+	if err := run(ctx, []string{"-config", writeConfig(t), "-log-level", "warn"}, &out, testGetenv, nil); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(out.String(), `"level":"INFO"`) {
@@ -181,21 +223,40 @@ func TestRunLogLevelFiltersDebug(t *testing.T) {
 	}
 }
 
-func TestRunDoesNotLogConfigContents(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "warden.yaml")
-	const secret = "super-secret-value-do-not-log"
-	if err := os.WriteFile(path, []byte("client_secret: "+secret+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+func TestRunDoesNotLogSecrets(t *testing.T) {
 	var out syncBuffer
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if err := run(ctx, []string{"-config", path, "-log-level", "debug"}, &out, nil); err != nil {
+	if err := run(ctx, []string{"-config", writeConfig(t), "-log-level", "debug"}, &out, testGetenv, nil); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(out.String(), secret) {
-		t.Errorf("config contents leaked into logs:\n%s", out.String())
+	if strings.Contains(out.String(), testSecret) {
+		t.Errorf("client secret leaked into logs:\n%s", out.String())
+	}
+}
+
+// A secret pasted into the config by mistake must not be echoed in the error,
+// which main logs on exit.
+func TestRunDoesNotEchoSecretFromBadConfig(t *testing.T) {
+	path := writeConfigContent(t, strings.Replace(minimalConfig,
+		"client_secret_env: "+testSecretEnv, "client_secret_env: "+testSecret+"!", 1))
+	var out syncBuffer
+	err := run(context.Background(), []string{"-config", path}, &out, testGetenv, nil)
+	if err == nil {
+		t.Fatal("run succeeded, want error")
+	}
+	if strings.Contains(err.Error(), testSecret) || strings.Contains(out.String(), testSecret) {
+		t.Errorf("secret echoed: err=%q out=%q", err, out.String())
+	}
+}
+
+func TestRunFailsWhenSecretEnvUnset(t *testing.T) {
+	var out syncBuffer
+	err := run(context.Background(), []string{"-config", writeConfig(t)}, &out,
+		func(string) string { return "" }, nil)
+	if err == nil || !strings.Contains(err.Error(), testSecretEnv) {
+		t.Fatalf("err = %v, want error naming %s", err, testSecretEnv)
 	}
 }
 
@@ -264,6 +325,7 @@ func TestBinaryGracefulShutdownOnSignal(t *testing.T) {
 	for _, sig := range []syscall.Signal{syscall.SIGINT, syscall.SIGTERM} {
 		t.Run(sig.String(), func(t *testing.T) {
 			cmd := exec.CommandContext(t.Context(), bin, "-config", writeConfig(t)) //nolint:gosec // G204: test-built binary in t.TempDir()
+			cmd.Env = append(os.Environ(), testSecretEnv+"="+testSecret)
 			stderr, err := cmd.StderrPipe()
 			if err != nil {
 				t.Fatal(err)

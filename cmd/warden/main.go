@@ -13,6 +13,8 @@ import (
 	"slices"
 	"syscall"
 	"time"
+
+	"github.com/hersinabil5/warden/internal/config"
 )
 
 // shutdownTimeout bounds how long graceful shutdown may take before giving up.
@@ -31,7 +33,7 @@ func main() {
 		stop()
 	}()
 
-	err := run(ctx, os.Args[1:], os.Stderr, slog.SetDefault)
+	err := run(ctx, os.Args[1:], os.Stderr, os.Getenv, slog.SetDefault)
 	stop()
 	switch {
 	case err == nil, errors.Is(err, flag.ErrHelp):
@@ -42,10 +44,11 @@ func main() {
 	}
 }
 
-// run parses flags, sets up logging, and blocks until ctx is cancelled, then
-// shuts down gracefully. Logs go to logOut as JSON. If onLogger is non-nil it
-// receives the configured logger (main uses it to install the process default).
-func run(ctx context.Context, args []string, logOut io.Writer, onLogger func(*slog.Logger)) error {
+// run parses flags, loads the config, sets up logging, and blocks until ctx is
+// cancelled, then shuts down gracefully. Logs go to logOut as JSON. getenv
+// resolves secrets named in the config. If onLogger is non-nil it receives the
+// configured logger (main uses it to install the process default).
+func run(ctx context.Context, args []string, logOut io.Writer, getenv func(string) string, onLogger func(*slog.Logger)) error {
 	fs := flag.NewFlagSet("warden", flag.ContinueOnError)
 	fs.SetOutput(logOut)
 	configPath := fs.String("config", "", "path to the YAML config file (required)")
@@ -65,10 +68,9 @@ func run(ctx context.Context, args []string, logOut io.Writer, onLogger func(*sl
 		return fmt.Errorf("invalid -log-level %q: %w", *logLevel, err)
 	}
 
-	// Only check that the config is readable for now; parsing and validation
-	// arrive with internal/config. Never log the contents: it may hold secrets.
-	if _, err := os.ReadFile(*configPath); err != nil {
-		return fmt.Errorf("reading config: %w", err)
+	cfg, err := config.Load(*configPath, getenv)
+	if err != nil {
+		return err
 	}
 
 	logger := slog.New(slog.NewJSONHandler(logOut, &slog.HandlerOptions{Level: level}))
@@ -78,7 +80,7 @@ func run(ctx context.Context, args []string, logOut io.Writer, onLogger func(*sl
 
 	var hooks []shutdownFunc
 
-	logger.Info("warden starting", "config", *configPath)
+	logger.Info("warden starting", "config", *configPath, "routes", len(cfg.Routes))
 	<-ctx.Done()
 	logger.Info("shutting down", "timeout", shutdownTimeout.String())
 

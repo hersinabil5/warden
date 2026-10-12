@@ -31,8 +31,9 @@ Update this whenever a change adds, removes, or weakens a mitigation.
 | T9 | Stolen session cookie | HttpOnly/Secure/SameSite, host-only cookies, idle + absolute TTL, revocation | M2, M5 | planned |
 | T10 | Weak authentication on sensitive paths | Step-up MFA with recency check | M7 | planned |
 | T11 | Brute force / abuse of auth endpoints | Rate limiting | M7 | planned |
-| T12 | Secrets leaking via logs | Never log tokens/cookies/codes; hashed identifiers only | all | planned |
+| T12 | Secrets leaking via logs | Never log tokens/cookies/codes; hashed identifiers only; client secret held in a self-redacting `config.Secret` and never echoed in config errors | all | partial (config: done) |
 | T13 | Admin dashboard CSRF / XSS | CSRF tokens, strict CSP, no inline scripts | M5, M6 | planned |
+| T14 | Misconfiguration silently weakens policy | Strict config decoding and validation at startup; ambiguous rules, non-normalized path prefixes, and pathful upstreams rejected (D5) | M1 | done |
 
 ## Out of scope (explicitly not defended)
 

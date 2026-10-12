@@ -50,3 +50,23 @@ and give a reason: `//nolint:gosec // <why this is safe>`.
 
 **Consequences:** Some test code needs explicit, explained suppressions. Every silenced
 security warning is visible in review and greppable (`grep -rn nolint`).
+
+## D5: Strict config: reject ambiguity instead of guessing
+
+**Context:** The config is the security policy. A typo that loads "successfully" can silently
+weaken it: an empty rule `{}` reads as "no conditions", `groups: []` or `require_mfa_within: 0s`
+can read as "no restriction", a misspelled key is ignored, and an upstream with a path prefix
+means the upstream sees a different path from the one policy evaluated.
+
+**Decision:** `internal/config` decodes strictly (unknown fields, duplicate keys, wrong types,
+and extra YAML documents are errors) and rejects anything ambiguous: empty rules, empty
+condition lists, `authenticated: false` (no public routes until there is an explicit `public:
+true`), non-positive durations, path prefixes not already in normalized form, upstream URLs
+with a path/query/fragment/credentials, and hosts that are not a single lowercase DNS spelling
+(no ports, IPs, wildcards, or trailing dot). Every problem is reported at once with its field
+path. The client secret comes only from the environment variable named in the config, is held
+in a `config.Secret` that redacts itself in fmt/slog/JSON, and a missing secret fails at
+startup.
+
+**Consequences:** Some valid-looking configs are refused and must be rewritten explicitly.
+Public routes and upstream path prefixes need a deliberate design change, not a config tweak.

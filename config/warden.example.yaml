@@ -1,4 +1,5 @@
-# Canonical example config. Keep in sync with internal/config structs.
+# Canonical example config. Keep in sync with internal/config structs
+# (TestLoadExampleConfig fails if it stops loading). Unknown keys are errors.
 # Copy to config/warden.dev.yaml for local use.
 
 listen: ":8443"
@@ -12,7 +13,7 @@ auth:
   domain: auth.warden.localhost          # central auth host (login, callback, admin)
   issuer: http://localhost:8180/realms/warden
   client_id: warden-proxy
-  client_secret_env: WARDEN_CLIENT_SECRET
+  client_secret_env: WARDEN_CLIENT_SECRET   # env var NAME; the secret never goes in this file
   scopes: [openid, email, profile]
   groups_claim: groups
   group_refresh_interval: 5m
@@ -26,7 +27,7 @@ session:
 identity:
   header: X-Warden-Identity
   signing_key_file: deploy/certs/identity-signing-key.pem   # ES256 private key
-  ttl: 60s
+  ttl: 60s                 # max 60s
 
 strip_headers:            # in addition to the built-in list
   - X-Remote-User
@@ -35,6 +36,9 @@ audit:
   sink: file              # file | stdout
   file: var/audit.jsonl
 
+# Routes: host is a lowercase DNS name (no port). upstream is scheme://host:port only,
+# no path, so the upstream sees exactly the normalized path policy evaluated.
+# Every allow rule needs at least one condition; empty rules and lists are errors.
 routes:
   - host: whoami.warden.localhost
     upstream: http://127.0.0.1:9001
