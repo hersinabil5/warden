@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"strings"
+	"time"
 
 	"github.com/hersinabil5/warden/internal/config"
 )
@@ -65,6 +66,13 @@ func New(cfg *config.Config, opts Options) (*Handler, error) {
 		h.routes[r.Host] = &httputil.ReverseProxy{
 			Rewrite: func(pr *httputil.ProxyRequest) {
 				pr.SetURL(target)
+				rewriteHeaders(pr)
+			},
+			ModifyResponse: func(res *http.Response) error {
+				// ServeHTTP already set Warden's ID on the response; drop any
+				// value the upstream sent so the client sees exactly one.
+				res.Header.Del(RequestIDHeader)
+				return nil
 			},
 			Transport: newTransport(tt, r.UpstreamTLS != nil),
 			ErrorLog:  slog.NewLogLogger(opts.Logger.Handler(), slog.LevelWarn),
@@ -74,12 +82,28 @@ func New(cfg *config.Config, opts Options) (*Handler, error) {
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
 	id := newRequestID()
 	r = r.WithContext(withRequestID(r.Context(), id))
 	w.Header().Set(RequestIDHeader, id)
 
 	host := hostOnly(r.Host)
+	rec := &statusRecorder{ResponseWriter: w}
+	defer func() {
+		// Path only: the query string can carry tokens or codes (invariant 9).
+		h.logger.Info("request",
+			"request_id", id,
+			"host", host,
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", rec.statusCode(),
+			"duration_ms", time.Since(start).Milliseconds(),
+		)
+	}()
+	h.route(rec, r, host, id)
+}
 
+func (h *Handler) route(w http.ResponseWriter, r *http.Request, host, id string) {
 	// The TLS session was negotiated for ServerName; refuse to use it for a
 	// different host.
 	if r.TLS != nil && r.TLS.ServerName != "" && !strings.EqualFold(r.TLS.ServerName, host) {

@@ -38,6 +38,8 @@ Update this whenever a change adds, removes, or weakens a mitigation.
 | T16 | Host confusion / domain fronting (SNI ≠ Host) | 421 when TLS ServerName and Host differ (D7) | M1 | done |
 | T17 | Upstream traffic rerouted via `HTTP_PROXY` env | Upstream transport ignores proxy env vars (D6) | M1 | done |
 | T18 | Upstream path shadowing Warden endpoints | `/.warden/` reserved on every host, never proxied (D7) | M1 | done |
+| T19 | Spoofed client IP / host / scheme via `X-Forwarded-*`, `Forwarded`, `X-Real-IP` | Overwritten with values Warden observed (never appended); `Forwarded` and `X-Real-IP` removed; hop-by-hop headers stripped both ways | M1 | done |
+| T20 | Forged or colliding request IDs in logs/audit | Warden always generates the ID; client and upstream values discarded (D7) | M1 | done |
 
 ## Out of scope (explicitly not defended)
 
