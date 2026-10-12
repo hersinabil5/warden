@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -17,6 +18,10 @@ import (
 // reservedPrefix is Warden's own path namespace on every host. Requests under
 // it are handled by Warden and never proxied (docs/DECISIONS.md D7).
 const reservedPrefix = "/.warden"
+
+// HealthzPath is a liveness check served on every host, with or without
+// authentication. It reports only that the process is serving.
+const HealthzPath = reservedPrefix + "/healthz"
 
 // Options configures a Handler.
 type Options struct {
@@ -116,6 +121,10 @@ func (h *Handler) route(w http.ResponseWriter, r *http.Request, host, id string)
 		return
 	}
 
+	if r.URL.Path == HealthzPath {
+		serveHealthz(w, r, id)
+		return
+	}
 	if r.URL.Path == reservedPrefix || strings.HasPrefix(r.URL.Path, reservedPrefix+"/") {
 		writePage(w, http.StatusNotFound, id)
 		return
@@ -134,6 +143,20 @@ func (h *Handler) route(w http.ResponseWriter, r *http.Request, host, id string)
 		return
 	}
 	rp.ServeHTTP(w, r)
+}
+
+func serveHealthz(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		writePage(w, http.StatusMethodNotAllowed, id)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	if r.Method == http.MethodGet {
+		_, _ = io.WriteString(w, `{"status":"ok"}`+"\n")
+	}
 }
 
 // upstreamError logs the real cause and shows the client a generic 502 page.
