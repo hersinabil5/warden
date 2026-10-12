@@ -37,3 +37,16 @@ don't touch the global.
 
 **Consequences:** All process output is JSON. Tests can run in parallel without racing on
 the default logger.
+
+## D4: Lint policy: no global exclusions, justified suppressions only
+
+**Context:** `gosec` catches several invariant violations mechanically (`math/rand`, missing
+`ReadHeaderTimeout`, `InsecureSkipVerify`, weak crypto). A global exclusion, or a bare
+`//nolint`, would silence those warnings everywhere without anyone noticing.
+
+**Decision:** `.golangci.yml` has no global exclusions or presets, and `gosec` runs on tests
+too. Exceptions are line-level only, and `nolintlint` requires each one to name the linter
+and give a reason: `//nolint:gosec // <why this is safe>`.
+
+**Consequences:** Some test code needs explicit, explained suppressions. Every silenced
+security warning is visible in review and greppable (`grep -rn nolint`).

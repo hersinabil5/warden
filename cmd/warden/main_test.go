@@ -256,14 +256,14 @@ func TestBinaryGracefulShutdownOnSignal(t *testing.T) {
 		t.Skip("builds a binary")
 	}
 	bin := filepath.Join(t.TempDir(), "warden")
-	build := exec.Command("go", "build", "-o", bin, ".")
+	build := exec.CommandContext(t.Context(), "go", "build", "-o", bin, ".") //nolint:gosec // G204: bin is a path under t.TempDir()
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build failed: %v\n%s", err, out)
 	}
 
 	for _, sig := range []syscall.Signal{syscall.SIGINT, syscall.SIGTERM} {
 		t.Run(sig.String(), func(t *testing.T) {
-			cmd := exec.Command(bin, "-config", writeConfig(t))
+			cmd := exec.CommandContext(t.Context(), bin, "-config", writeConfig(t)) //nolint:gosec // G204: test-built binary in t.TempDir()
 			stderr, err := cmd.StderrPipe()
 			if err != nil {
 				t.Fatal(err)
@@ -316,10 +316,10 @@ func TestBinaryExitsNonZeroOnBadConfig(t *testing.T) {
 		t.Skip("builds a binary")
 	}
 	bin := filepath.Join(t.TempDir(), "warden")
-	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+	if out, err := exec.CommandContext(t.Context(), "go", "build", "-o", bin, ".").CombinedOutput(); err != nil { //nolint:gosec // G204: bin is a path under t.TempDir()
 		t.Fatalf("build failed: %v\n%s", err, out)
 	}
-	cmd := exec.Command(bin, "-config", filepath.Join(t.TempDir(), "nope.yaml"))
+	cmd := exec.CommandContext(t.Context(), bin, "-config", filepath.Join(t.TempDir(), "nope.yaml")) //nolint:gosec // G204: test-built binary in t.TempDir()
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	err := cmd.Run()
