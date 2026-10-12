@@ -1,7 +1,8 @@
 {
   "realm": "warden",
   "enabled": true,
-  "sslRequired": "none",
+  "sslRequired": "external",
+  "bruteForceProtected": true,
   "groups": [
     { "name": "admins" },
     { "name": "sre" },

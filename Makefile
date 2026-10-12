@@ -4,7 +4,7 @@
 export
 
 dev-up:
-	docker compose -f deploy/docker-compose.yml up -d
+	docker compose -f deploy/docker-compose.yml up -d --wait --wait-timeout 180
 
 dev-down:
 	docker compose -f deploy/docker-compose.yml down
