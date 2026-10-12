@@ -13,6 +13,8 @@ concurrency:
   cancel-in-progress: true
 
 # Third-party actions are pinned to full commit SHAs; tags can be moved.
+# check-latest: every job uses the newest patch of the go.mod release, so tests
+# and govulncheck see the same standard library a fresh build would ship.
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -24,6 +26,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+          check-latest: true
       - run: go build ./...
       - run: go test -race ./...
 
@@ -37,6 +40,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+          check-latest: true
       - run: go vet ./...
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
@@ -52,6 +56,5 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-          # govulncheck reports standard library vulns for the toolchain it runs on.
           check-latest: true
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
