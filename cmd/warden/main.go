@@ -18,6 +18,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/redis/go-redis/v9"
+
 	"github.com/hersinabil5/warden/internal/authn"
 	"github.com/hersinabil5/warden/internal/config"
 	"github.com/hersinabil5/warden/internal/proxy"
@@ -43,7 +45,7 @@ func main() {
 		stop()
 	}()
 
-	err := run(ctx, os.Args[1:], os.Stderr, os.Getenv, slog.SetDefault)
+	err := run(ctx, os.Args[1:], os.Stderr, os.Getenv, installLogger)
 	stop()
 	switch {
 	case err == nil, errors.Is(err, flag.ErrHelp):
@@ -52,6 +54,14 @@ func main() {
 		slog.New(slog.NewJSONHandler(os.Stderr, nil)).Error("warden exited", "err", err)
 		os.Exit(1)
 	}
+}
+
+// installLogger makes l the process-wide logger for code Warden does not
+// own: the slog default and go-redis's package logger (D3). Only main calls
+// it, once.
+func installLogger(l *slog.Logger) {
+	slog.SetDefault(l)
+	redis.SetLogger(session.RedisLogger{Logger: l})
 }
 
 // run parses flags, loads the config, sets up logging, discovers the OIDC

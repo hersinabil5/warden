@@ -36,7 +36,8 @@ exactly once at startup. Internal packages never read or write the default; they
 don't touch the global.
 
 **Consequences:** All process output is JSON. Tests can run in parallel without racing on
-the default logger.
+the default logger. The same callback also installs go-redis's package-level logger (added in M2),
+which otherwise prints plain text.
 
 ## D4: Lint policy: no global exclusions, justified suppressions only
 
