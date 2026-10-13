@@ -21,8 +21,8 @@ Update this whenever a change adds, removes, or weakens a mitigation.
 | # | Threat | Mitigation | Milestone | Status |
 |---|--------|-----------|-----------|--------|
 | T1 | Unauthenticated access to internal apps | Default-deny routing (unknown host 404, routed host 403 until login exists); login required. Temporary loopback-only dev bypass (D6) | M1–M3 | partial |
-| T2 | Login CSRF / session fixation | Random 256-bit `state`/`nonce` + PKCE S256 verifier in a sealed, host-only, per-login pre-auth cookie (D9); single-use check at callback and new session ID on login pending | M2 | partial |
-| T3 | Token forgery or substitution | Full ID token validation: signature via JWKS with pinned asymmetric algs (no `none`/`HS*`, D8), `iss`, `aud`, `exp` done; `nonce`/`iat` at callback | M2 | partial |
+| T2 | Login CSRF / session fixation | Random 256-bit `state`/`nonce` + PKCE S256 in a sealed, host-only, per-login cookie (D9); callback requires the cookie for that state, single-use state in Redis before code exchange, and a fresh session ID with any prior session revoked (D12) | M2 | done |
+| T3 | Token forgery or substitution | Signature via JWKS with pinned asymmetric algs (no `none`/`HS*`, D8); `iss`, `aud`, `exp`; `nonce` bound to the pre-auth cookie; `iat` within the login window; `azp`; `sub` required; groups claim type-checked; unverified email dropped (D12) | M2 | done |
 | T4 | Open redirect via return URL | Return URL must be a literal `https://` URL on a configured route host and Warden's public port; `\\`, whitespace, control chars, userinfo and other schemes rejected; redirect goes to a canonical URL rebuilt from the parsed parts; fuzzed (D11) | M2 | done |
 | T5 | Policy bypass via path tricks | Normalize path; forward the normalized path; reject ambiguous encodings | M3 | planned |
 | T6 | Identity header spoofing | Strip all identity headers; signed short-lived assertion | M4 | planned |

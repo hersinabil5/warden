@@ -1,15 +1,21 @@
 // Package testidp is a fake OIDC identity provider for tests: an
-// httptest.Server serving a discovery document and a JWKS backed by a
-// generated RSA signing key. Tests can rewrite the discovery document, inject
-// failures, and sign ID tokens with arbitrary claims.
+// httptest.Server serving discovery, JWKS, an authorize endpoint that signs
+// the user in immediately, and a token endpoint that enforces PKCE S256,
+// single-use codes, redirect_uri matching, and client authentication. Tests
+// can rewrite the discovery document, inject failures, and tamper with the
+// ID token the token endpoint returns.
 package testidp
 
 import (
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync"
 	"testing"
 	"time"
@@ -22,6 +28,8 @@ const (
 	JWKSPath      = "/jwks"
 	KeyID         = "testidp-key-1"
 	ClientID      = "warden-proxy"
+	// ClientSecret is what the token endpoint expects by default.
+	ClientSecret = "testidp-client-secret"
 
 	issuerPath = "/realms/test"
 )
@@ -39,6 +47,20 @@ type IdP struct {
 	jwksOverride  []byte
 	discoveryHits int
 	jwksHits      int
+
+	codes         map[string]authRequest
+	userClaims    func() map[string]any
+	editIDToken   func(map[string]any)
+	signIDToken   func(claims map[string]any) string
+	tokenFail     []int
+	tokenHits     int
+	lastAuthorize url.Values
+	clientSecret  string
+}
+
+// authRequest is what /auth recorded for an issued code.
+type authRequest struct {
+	redirectURI, nonce, challenge string
 }
 
 // New starts a fake IdP that is closed when the test ends.
@@ -48,8 +70,10 @@ func New(t testing.TB) *IdP {
 	if err != nil {
 		t.Fatal(err)
 	}
-	idp := &IdP{Key: key}
+	idp := &IdP{Key: key, codes: map[string]authRequest{}, clientSecret: ClientSecret}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /auth", idp.serveAuthorize)
+	mux.HandleFunc("POST /token", idp.serveToken)
 	// Discovery lives under the issuer path, as with Keycloak realms.
 	mux.HandleFunc("GET "+issuerPath+DiscoveryPath, idp.serveDiscovery)
 	mux.HandleFunc("GET "+JWKSPath, idp.serveJWKS)
@@ -130,35 +154,25 @@ func (idp *IdP) PublicJWKS() []byte {
 func (idp *IdP) Claims() map[string]any {
 	now := time.Now()
 	return map[string]any{
-		"iss":   idp.Issuer,
-		"aud":   ClientID,
-		"sub":   "user-1",
-		"email": "alice@example.test",
-		"iat":   now.Unix(),
-		"exp":   now.Add(5 * time.Minute).Unix(),
-		"nonce": "test-nonce",
+		"iss":                idp.Issuer,
+		"aud":                ClientID,
+		"sub":                "user-1",
+		"email":              "alice@example.test",
+		"email_verified":     true,
+		"preferred_username": "alice",
+		"groups":             []string{"admins", "sre"},
+		"auth_time":          now.Unix(),
+		"amr":                []string{"pwd"},
+		"iat":                now.Unix(),
+		"exp":                now.Add(5 * time.Minute).Unix(),
+		"nonce":              "test-nonce",
 	}
 }
 
 // SignIDToken signs claims with the IdP's RS256 key.
 func (idp *IdP) SignIDToken(t testing.TB, claims map[string]any) string {
 	t.Helper()
-	signer, err := jose.NewSigner(
-		jose.SigningKey{Algorithm: jose.RS256, Key: jose.JSONWebKey{Key: idp.Key, KeyID: KeyID}},
-		(&jose.SignerOptions{}).WithType("JWT"),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	payload, err := json.Marshal(claims)
-	if err != nil {
-		t.Fatal(err)
-	}
-	jws, err := signer.Sign(payload)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tok, err := jws.CompactSerialize()
+	tok, err := idp.sign(claims)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,4 +212,197 @@ func (idp *IdP) serveJWKS(w http.ResponseWriter, _ *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(body)
+}
+
+// SetClientSecret changes the secret the token endpoint requires.
+func (idp *IdP) SetClientSecret(secret string) {
+	idp.mu.Lock()
+	defer idp.mu.Unlock()
+	idp.clientSecret = secret
+}
+
+// SetUser makes /auth sign in a user with these claims (merged over Claims;
+// the authorize request's nonce is added).
+func (idp *IdP) SetUser(claims func() map[string]any) {
+	idp.mu.Lock()
+	defer idp.mu.Unlock()
+	idp.userClaims = claims
+}
+
+// EditIDToken modifies the claims of every ID token the token endpoint
+// issues, after the nonce is set (for example, to break aud or nonce).
+func (idp *IdP) EditIDToken(fn func(claims map[string]any)) {
+	idp.mu.Lock()
+	defer idp.mu.Unlock()
+	idp.editIDToken = fn
+}
+
+// SignIDTokenWith replaces RS256 signing of issued ID tokens (for example,
+// to return alg=none or a token signed by another key).
+func (idp *IdP) SignIDTokenWith(fn func(claims map[string]any) string) {
+	idp.mu.Lock()
+	defer idp.mu.Unlock()
+	idp.signIDToken = fn
+}
+
+// FailToken makes the next len(statuses) token requests fail with those
+// statuses and an OAuth error body.
+func (idp *IdP) FailToken(statuses ...int) {
+	idp.mu.Lock()
+	defer idp.mu.Unlock()
+	idp.tokenFail = append(idp.tokenFail, statuses...)
+}
+
+// TokenHits counts token endpoint requests.
+func (idp *IdP) TokenHits() int {
+	idp.mu.Lock()
+	defer idp.mu.Unlock()
+	return idp.tokenHits
+}
+
+// LastAuthorize returns the query of the most recent /auth request.
+func (idp *IdP) LastAuthorize() url.Values {
+	idp.mu.Lock()
+	defer idp.mu.Unlock()
+	return idp.lastAuthorize
+}
+
+// serveAuthorize validates the request like a strict IdP, then "signs the
+// user in" at once and redirects back with a code.
+func (idp *IdP) serveAuthorize(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	idp.mu.Lock()
+	idp.lastAuthorize = q
+	idp.mu.Unlock()
+	if q.Get("client_id") != ClientID || q.Get("response_type") != "code" ||
+		q.Get("code_challenge_method") != "S256" || q.Get("code_challenge") == "" ||
+		q.Get("redirect_uri") == "" || q.Get("state") == "" {
+		http.Error(w, "invalid authorize request", http.StatusBadRequest)
+		return
+	}
+	code := rand.Text()
+	idp.mu.Lock()
+	idp.codes[code] = authRequest{redirectURI: q.Get("redirect_uri"), nonce: q.Get("nonce"), challenge: q.Get("code_challenge")}
+	idp.mu.Unlock()
+
+	back, err := url.Parse(q.Get("redirect_uri"))
+	if err != nil {
+		http.Error(w, "bad redirect_uri", http.StatusBadRequest)
+		return
+	}
+	bq := back.Query()
+	bq.Set("code", code)
+	bq.Set("state", q.Get("state"))
+	back.RawQuery = bq.Encode()
+	http.Redirect(w, r, back.String(), http.StatusFound) //nolint:gosec // G710: an IdP redirects to the client's redirect_uri by design; test-only
+}
+
+func oauthError(w http.ResponseWriter, status int, code string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": code})
+}
+
+// serveToken implements the authorization_code grant with client_secret_basic
+// or client_secret_post, enforcing PKCE S256 and single-use codes.
+func (idp *IdP) serveToken(w http.ResponseWriter, r *http.Request) {
+	idp.mu.Lock()
+	idp.tokenHits++
+	var fail int
+	if len(idp.tokenFail) > 0 {
+		fail, idp.tokenFail = idp.tokenFail[0], idp.tokenFail[1:]
+	}
+	secret := idp.clientSecret
+	idp.mu.Unlock()
+	if fail != 0 {
+		oauthError(w, fail, "server_error")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		oauthError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	id, pw, ok := r.BasicAuth()
+	if ok {
+		id, _ = url.QueryUnescape(id)
+		pw, _ = url.QueryUnescape(pw)
+	} else {
+		id, pw = r.PostForm.Get("client_id"), r.PostForm.Get("client_secret")
+	}
+	if id != ClientID || subtle.ConstantTimeCompare([]byte(pw), []byte(secret)) != 1 {
+		oauthError(w, http.StatusUnauthorized, "invalid_client")
+		return
+	}
+	if r.PostForm.Get("grant_type") != "authorization_code" {
+		oauthError(w, http.StatusBadRequest, "unsupported_grant_type")
+		return
+	}
+
+	code := r.PostForm.Get("code")
+	idp.mu.Lock()
+	req, found := idp.codes[code]
+	delete(idp.codes, code) // single use, even when the rest fails
+	userClaims, edit, sign := idp.userClaims, idp.editIDToken, idp.signIDToken
+	idp.mu.Unlock()
+	if !found || r.PostForm.Get("redirect_uri") != req.redirectURI {
+		oauthError(w, http.StatusBadRequest, "invalid_grant")
+		return
+	}
+	sum := sha256.Sum256([]byte(r.PostForm.Get("code_verifier")))
+	if base64.RawURLEncoding.EncodeToString(sum[:]) != req.challenge {
+		oauthError(w, http.StatusBadRequest, "invalid_grant")
+		return
+	}
+
+	claims := idp.Claims()
+	if userClaims != nil {
+		for k, v := range userClaims() {
+			claims[k] = v
+		}
+	}
+	claims["nonce"] = req.nonce
+	if req.nonce == "" {
+		delete(claims, "nonce")
+	}
+	if edit != nil {
+		edit(claims)
+	}
+	var idToken string
+	if sign != nil {
+		idToken = sign(claims)
+	} else {
+		var err error
+		if idToken, err = idp.sign(claims); err != nil {
+			oauthError(w, http.StatusInternalServerError, "server_error")
+			return
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"access_token":  "at-" + rand.Text(),
+		"token_type":    "Bearer",
+		"expires_in":    300,
+		"refresh_token": "rt-" + rand.Text(),
+		"id_token":      idToken,
+	})
+}
+
+func (idp *IdP) sign(claims map[string]any) (string, error) {
+	signer, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.RS256, Key: jose.JSONWebKey{Key: idp.Key, KeyID: KeyID}},
+		(&jose.SignerOptions{}).WithType("JWT"),
+	)
+	if err != nil {
+		return "", err
+	}
+	payload, err := json.Marshal(claims)
+	if err != nil {
+		return "", err
+	}
+	jws, err := signer.Sign(payload)
+	if err != nil {
+		return "", err
+	}
+	return jws.CompactSerialize()
 }

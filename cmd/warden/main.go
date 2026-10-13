@@ -129,6 +129,7 @@ func run(ctx context.Context, args []string, logOut io.Writer, getenv func(strin
 	}
 	authHandler, err := authn.NewHandler(cfg, provider, authn.HandlerOptions{
 		CookieKey: cookieKey,
+		Sessions:  sessions,
 		Logger:    logger,
 		ErrorPage: proxy.ErrorPage,
 	})

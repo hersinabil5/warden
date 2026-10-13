@@ -220,3 +220,34 @@ accepted URL lands on an allowed origin and re-validates to itself.
 
 **Consequences:** Warden builds absolute return URLs itself when it sends an app request to login,
 so legitimate flows always pass. Hand-written relative `rd` values don't work.
+
+## D12: Callback checks and ordering
+
+**Context:** The callback is where untrusted input (query parameters, cookies, the IdP's token
+response) turns into a session. Every check must run before anything is created, and a failure at
+any step must deny.
+
+**Decision:** In order:
+1. Exactly one non-empty `state` is required. The pre-auth cookie for that state must exist (no
+   cookie means a login started in another browser: login CSRF). The cookie is cleared from this
+   point on, whatever the outcome.
+2. The cookie must open (D9), and its sealed `state` must equal the query `state` (constant-time).
+3. `state` is marked used in Redis (`SET NX`) before the code is exchanged, so a replay never
+   reaches the IdP.
+4. An IdP `error` parameter, or anything other than exactly one `code`, is rejected.
+5. Code exchange with the PKCE verifier and `client_secret_basic` (one fixed auth method), over the
+   bounded IdP client. Only the OAuth error code is logged from a refusal, never the body.
+6. ID token: go-oidc checks signature (pinned algorithms), `iss`, `aud` and `exp`. Warden then
+   requires a `nonce` equal to the sealed one (constant-time), an `iat` no earlier than the login
+   start and no later than now (1 minute skew both ways), `azp` equal to the client ID when there
+   are several audiences or `azp` is present, and a non-empty `sub`. The groups claim must be a
+   list of non-empty strings if present. Email is kept only when `email_verified` is the boolean
+   `true`.
+7. Any session cookie the browser already had is revoked, and a new session ID is issued (T2).
+
+Client-caused failures return 400, IdP outages 502, and Redis failures 500. Details go only to
+the log, keyed by request ID with hashed `state` and session prefixes.
+
+**Consequences:** Users whose IdP account has no verified email get no email in their session, so
+`email_domains` rules won't match them. Groups are used exactly as the IdP sends them. Keycloak's
+mapper uses flat names (`full.path: false`).

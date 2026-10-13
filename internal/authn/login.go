@@ -14,18 +14,21 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/hersinabil5/warden/internal/config"
+	"github.com/hersinabil5/warden/internal/session"
 )
 
 // Warden's endpoints on the auth host, under the reserved /.warden/ prefix.
 const (
 	LoginPath    = "/.warden/login"
 	CallbackPath = "/.warden/callback"
+	SessionPath  = "/.warden/session"
 )
 
 // HandlerOptions configures a Handler.
 type HandlerOptions struct {
 	// CookieKey seals pre-auth cookies; 32 bytes from NewCookieKey.
 	CookieKey []byte
+	Sessions  *session.Store
 	Logger    *slog.Logger
 	// ErrorPage writes Warden's generic error page. Nil falls back to a plain
 	// status text response.
@@ -35,12 +38,16 @@ type HandlerOptions struct {
 
 // Handler serves the OIDC endpoints on the auth host.
 type Handler struct {
-	oauth     oauth2.Config
-	returns   *returnURLs
-	sealer    *cookieSealer
-	logger    *slog.Logger
-	errorPage func(http.ResponseWriter, *http.Request, int)
-	now       func() time.Time
+	oauth       oauth2.Config
+	provider    *Provider
+	sessions    *session.Store
+	cookieName  string
+	groupsClaim string
+	returns     *returnURLs
+	sealer      *cookieSealer
+	logger      *slog.Logger
+	errorPage   func(http.ResponseWriter, *http.Request, int)
+	now         func() time.Time
 }
 
 // NewHandler builds the auth-host handler from a validated config and a
@@ -48,6 +55,9 @@ type Handler struct {
 func NewHandler(cfg *config.Config, p *Provider, opts HandlerOptions) (*Handler, error) {
 	if p == nil {
 		return nil, errors.New("authn: provider is required")
+	}
+	if opts.Sessions == nil {
+		return nil, errors.New("authn: session store is required")
 	}
 	if opts.Now == nil {
 		opts.Now = time.Now
@@ -68,24 +78,31 @@ func NewHandler(cfg *config.Config, p *Provider, opts HandlerOptions) (*Handler,
 	if err != nil {
 		return nil, err
 	}
+	// client_secret_basic: one fixed method, no auto-detect retries that
+	// would send the secret twice.
+	endpoint := p.Endpoint
+	endpoint.AuthStyle = oauth2.AuthStyleInHeader
 	hosts := make([]string, 0, len(cfg.Routes))
 	for _, r := range cfg.Routes {
 		hosts = append(hosts, r.Host)
 	}
 	return &Handler{
-		// The secret is not needed to build the authorize URL; the token
-		// exchange (callback) adds it.
 		oauth: oauth2.Config{
-			ClientID:    cfg.Auth.ClientID,
-			Endpoint:    p.Endpoint,
-			RedirectURL: origin(cfg.Auth.Domain, port) + CallbackPath,
-			Scopes:      cfg.Auth.Scopes,
+			ClientID:     cfg.Auth.ClientID,
+			ClientSecret: cfg.Auth.ClientSecret.Reveal(),
+			Endpoint:     endpoint,
+			RedirectURL:  origin(cfg.Auth.Domain, port) + CallbackPath,
+			Scopes:       cfg.Auth.Scopes,
 		},
-		returns:   newReturnURLs(hosts, port),
-		sealer:    sealer,
-		logger:    opts.Logger,
-		errorPage: opts.ErrorPage,
-		now:       opts.Now,
+		provider:    p,
+		sessions:    opts.Sessions,
+		cookieName:  cfg.Session.CookieName,
+		groupsClaim: cfg.Auth.GroupsClaim,
+		returns:     newReturnURLs(hosts, port),
+		sealer:      sealer,
+		logger:      opts.Logger,
+		errorPage:   opts.ErrorPage,
+		now:         opts.Now,
 	}, nil
 }
 
@@ -109,17 +126,24 @@ func origin(host, port string) string {
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	var serve http.HandlerFunc
 	switch r.URL.Path {
 	case LoginPath:
-		if r.Method != http.MethodGet {
-			w.Header().Set("Allow", http.MethodGet)
-			h.errorPage(w, r, http.StatusMethodNotAllowed)
-			return
-		}
-		h.login(w, r)
+		serve = h.login
+	case CallbackPath:
+		serve = h.callback
+	case SessionPath:
+		serve = h.sessionPage
 	default:
 		h.errorPage(w, r, http.StatusNotFound)
+		return
 	}
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		h.errorPage(w, r, http.StatusMethodNotAllowed)
+		return
+	}
+	serve(w, r)
 }
 
 // login starts the authorization code flow: fresh state, nonce, and PKCE

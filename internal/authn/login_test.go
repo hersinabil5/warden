@@ -8,9 +8,13 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/alicebob/miniredis/v2"
 
 	"github.com/hersinabil5/warden/internal/authn/testidp"
 	"github.com/hersinabil5/warden/internal/config"
+	"github.com/hersinabil5/warden/internal/session"
 )
 
 const testAuthDomain = "auth.example.test"
@@ -37,8 +41,12 @@ func newLoginEnv(t *testing.T, listen string) loginEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
+	mr := miniredis.RunT(t)
+	rdb := session.NewClient(mr.Addr())
+	t.Cleanup(func() { _ = rdb.Close() })
 	h, err := NewHandler(&config.Config{Listen: listen, Auth: auth, Routes: []config.Route{{Host: "app.example.test"}}}, p, HandlerOptions{
 		CookieKey: key,
+		Sessions:  session.NewStore(rdb, session.Options{AbsoluteTTL: time.Hour, IdleTimeout: time.Hour}),
 		Logger:    opts.Logger,
 	})
 	if err != nil {
@@ -212,7 +220,7 @@ func TestLoginRejectsOtherMethods(t *testing.T) {
 
 func TestHandlerUnknownPathIs404(t *testing.T) {
 	e := newLoginEnv(t, "127.0.0.1:8443")
-	for _, p := range []string{"/.warden/", "/.warden/login/", "/.warden/Login", "/.warden/loginx", "/.warden/nope"} {
+	for _, p := range []string{"/.warden/", "/.warden/login/", "/.warden/Login", "/.warden/loginx", "/.warden/nope", "/.warden/callback/", "/.warden/session/"} {
 		resp := e.do(t, http.MethodGet, "https://"+testAuthDomain+p)
 		_ = resp.Body.Close()
 		if resp.StatusCode != http.StatusNotFound {
