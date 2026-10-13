@@ -355,6 +355,9 @@ func TestParseRejectsInvalid(t *testing.T) {
 		{"identity header invalid", "  header: X-Warden-Identity", `  header: "X-Warden Identity"`, "identity.header"},
 		{"identity header empty", "  header: X-Warden-Identity", `  header: ""`, "identity.header"},
 		{"signing key missing", "  signing_key_file: signing.pem", `  signing_key_file: ""`, "identity.signing_key_file"},
+		{"previous key empty", "  signing_key_file: signing.pem", "  signing_key_file: signing.pem\n  previous_key_files: [\"\"]", "identity.previous_key_files[0]"},
+		{"previous key is active", "  signing_key_file: signing.pem", "  signing_key_file: signing.pem\n  previous_key_files: [signing.pem]", "identity.previous_key_files[0]"},
+		{"previous key duplicate", "  signing_key_file: signing.pem", "  signing_key_file: signing.pem\n  previous_key_files: [old.pem, old.pem]", "identity.previous_key_files[1]"},
 
 		// Header stripping.
 		{"strip header invalid", "strip_headers: [X-Remote-User]", `strip_headers: ["X-Remote User"]`, "strip_headers[0]"},

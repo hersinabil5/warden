@@ -1,6 +1,9 @@
 package proxy
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
 	"encoding/json"
 	"log/slog"
@@ -10,8 +13,10 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/hersinabil5/warden/internal/config"
+	"github.com/hersinabil5/warden/internal/identity"
 )
 
 // seenRequest is what the echo upstream reports about the request it got.
@@ -49,8 +54,23 @@ func testConfig(t *testing.T, upstream string) *config.Config {
 		Listen:             "127.0.0.1:8443",
 		HTTPRedirectListen: "127.0.0.1:8080",
 		Auth:               config.Auth{Domain: "auth.example.test"},
+		Identity:           config.Identity{Header: "X-Warden-Identity"},
 		Routes:             []config.Route{{Host: "app.example.test", UpstreamURL: u, Policy: anyUser}},
 	}
+}
+
+// testIdentity is a real signer with a throwaway key.
+func testIdentity(t testing.TB) *identity.Signer {
+	t.Helper()
+	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := identity.NewSigner(k, nil, identity.SignerOptions{Issuer: "https://auth.example.test", TTL: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
 }
 
 var anyUser = config.Policy{Allow: []config.Rule{{Authenticated: ptr(true)}}}
@@ -60,7 +80,7 @@ func ptr[T any](v T) *T { return &v }
 // newTestHandler serves cfg with every request authenticated (allowAll).
 func newTestHandler(t *testing.T, cfg *config.Config) *Handler {
 	t.Helper()
-	h, err := New(cfg, Options{Authenticator: allowAll{}, Logger: slog.New(slog.DiscardHandler)})
+	h, err := New(cfg, Options{Identity: testIdentity(t), Authenticator: allowAll{}, Logger: slog.New(slog.DiscardHandler)})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -182,7 +202,7 @@ func TestSNIMustMatchHost(t *testing.T) {
 func TestNewRejectsRouteWithoutUpstream(t *testing.T) {
 	cfg := testConfig(t, "http://127.0.0.1:1")
 	cfg.Routes[0].UpstreamURL = nil
-	if _, err := New(cfg, Options{Logger: slog.New(slog.DiscardHandler)}); err == nil {
+	if _, err := New(cfg, Options{Identity: testIdentity(t), Logger: slog.New(slog.DiscardHandler)}); err == nil {
 		t.Error("New accepted a route with no parsed upstream")
 	}
 }
@@ -190,7 +210,7 @@ func TestNewRejectsRouteWithoutUpstream(t *testing.T) {
 func TestNewRejectsInvalidPolicy(t *testing.T) {
 	cfg := testConfig(t, "http://127.0.0.1:1")
 	cfg.Routes[0].Policy = config.Policy{}
-	if _, err := New(cfg, Options{Logger: slog.New(slog.DiscardHandler)}); err == nil {
+	if _, err := New(cfg, Options{Identity: testIdentity(t), Logger: slog.New(slog.DiscardHandler)}); err == nil {
 		t.Error("New accepted a route with no allow rules")
 	}
 }

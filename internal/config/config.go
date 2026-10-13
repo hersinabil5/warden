@@ -50,9 +50,12 @@ type Session struct {
 }
 
 type Identity struct {
-	Header         string        `yaml:"header"` // canonicalized
-	SigningKeyFile string        `yaml:"signing_key_file"`
-	TTL            time.Duration `yaml:"ttl"`
+	Header         string `yaml:"header"` // canonicalized
+	SigningKeyFile string `yaml:"signing_key_file"`
+	// PreviousKeyFiles are retired signing keys (or their public keys),
+	// still published in the JWKS for verification during rotation.
+	PreviousKeyFiles []string      `yaml:"previous_key_files"`
+	TTL              time.Duration `yaml:"ttl"`
 }
 
 type Audit struct {

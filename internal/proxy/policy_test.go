@@ -39,7 +39,8 @@ func policyConfig(t *testing.T, upstream string, caseInsensitive bool) *config.C
 		t.Fatal(err)
 	}
 	return &config.Config{
-		Auth: config.Auth{Domain: "auth.example.test"},
+		Auth:     config.Auth{Domain: "auth.example.test"},
+		Identity: config.Identity{Header: "X-Warden-Identity"},
 		Routes: []config.Route{
 			{Host: "whoami.example.test", UpstreamURL: u, Policy: anyUser},
 			{Host: "grafana.example.test", UpstreamURL: u, Policy: config.Policy{
@@ -60,7 +61,7 @@ func policyConfig(t *testing.T, upstream string, caseInsensitive bool) *config.C
 
 func policyHandler(t *testing.T, cfg *config.Config, s *session.Session, logs *bytes.Buffer) *Handler {
 	t.Helper()
-	h, err := New(cfg, Options{
+	h, err := New(cfg, Options{Identity: testIdentity(t),
 		Authenticator: asUser{s},
 		Logger:        slog.New(slog.NewJSONHandler(logs, nil)),
 		Now:           func() time.Time { return testNow },
@@ -225,7 +226,7 @@ func TestUpstreamReceivesNormalizedPath(t *testing.T) {
 func TestAmbiguousPathRejectedFirst(t *testing.T) {
 	up := newEcho(t)
 	deny := &denyAll{}
-	h, err := New(testConfig(t, up.URL), Options{Authenticator: deny, Logger: slog.New(slog.DiscardHandler)})
+	h, err := New(testConfig(t, up.URL), Options{Identity: testIdentity(t), Authenticator: deny, Logger: slog.New(slog.DiscardHandler)})
 	if err != nil {
 		t.Fatal(err)
 	}

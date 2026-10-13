@@ -23,7 +23,7 @@ func (f *fakeAuth) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func TestAuthHandlerOnlyOnAuthHost(t *testing.T) {
 	echo := newEcho(t)
 	auth := &fakeAuth{}
-	h, err := New(testConfig(t, echo.URL), Options{Auth: auth, Authenticator: allowAll{}, Logger: slog.New(slog.DiscardHandler)})
+	h, err := New(testConfig(t, echo.URL), Options{Identity: testIdentity(t), Auth: auth, Authenticator: allowAll{}, Logger: slog.New(slog.DiscardHandler)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestAuthHandlerOnlyOnAuthHost(t *testing.T) {
 
 func TestAuthHandlerSeesWardenRequestID(t *testing.T) {
 	auth := &fakeAuth{}
-	h, err := New(testConfig(t, newEcho(t).URL), Options{Auth: auth, Logger: slog.New(slog.DiscardHandler)})
+	h, err := New(testConfig(t, newEcho(t).URL), Options{Identity: testIdentity(t), Auth: auth, Logger: slog.New(slog.DiscardHandler)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestAuthHandlerSeesWardenRequestID(t *testing.T) {
 }
 
 func TestErrorPageUsesRequestID(t *testing.T) {
-	h, err := New(testConfig(t, newEcho(t).URL), Options{
+	h, err := New(testConfig(t, newEcho(t).URL), Options{Identity: testIdentity(t),
 		Auth: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ErrorPage(w, r, http.StatusMethodNotAllowed)
 		}),

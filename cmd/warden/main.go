@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/tls"
 	"errors"
 	"flag"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/hersinabil5/warden/internal/authn"
 	"github.com/hersinabil5/warden/internal/config"
+	"github.com/hersinabil5/warden/internal/identity"
 	"github.com/hersinabil5/warden/internal/proxy"
 	"github.com/hersinabil5/warden/internal/session"
 )
@@ -104,6 +106,11 @@ func run(ctx context.Context, args []string, logOut io.Writer, getenv func(strin
 	if err != nil {
 		return fmt.Errorf("loading TLS certificate: %w", err)
 	}
+	signer, err := newSigner(cfg)
+	if err != nil {
+		return err
+	}
+	logger.Info("identity signing key loaded", "kid", signer.KeyID(), "previous_keys", len(cfg.Identity.PreviousKeyFiles))
 	// Fail fast, before binding any listener, if the IdP is unreachable or
 	// misconfigured.
 	provider, err := authn.Discover(ctx, cfg.Auth, authn.DiscoverOptions{Logger: logger})
@@ -146,6 +153,8 @@ func run(ctx context.Context, args []string, logOut io.Writer, getenv func(strin
 	}
 
 	handler, err := proxy.New(cfg, proxy.Options{
+		Identity:      signer,
+		JWKS:          signer.JWKSHandler(),
 		Logger:        logger,
 		Auth:          authHandler,
 		Authenticator: authHandler,
@@ -211,6 +220,28 @@ func run(ctx context.Context, args []string, logOut io.Writer, getenv func(strin
 	}
 	logger.Info("warden stopped")
 	return nil
+}
+
+// newSigner loads the identity assertion keys: the active signing key and
+// any previous keys still published for verification.
+func newSigner(cfg *config.Config) (*identity.Signer, error) {
+	key, err := identity.LoadSigningKey(cfg.Identity.SigningKeyFile)
+	if err != nil {
+		return nil, err
+	}
+	var previous []*ecdsa.PublicKey
+	for _, f := range cfg.Identity.PreviousKeyFiles {
+		pub, lerr := identity.LoadVerificationKey(f)
+		if lerr != nil {
+			return nil, lerr
+		}
+		previous = append(previous, pub)
+	}
+	issuer, err := authn.AuthOrigin(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return identity.NewSigner(key, previous, identity.SignerOptions{Issuer: issuer, TTL: cfg.Identity.TTL})
 }
 
 // shutdown runs hooks in reverse registration order, sharing one deadline.

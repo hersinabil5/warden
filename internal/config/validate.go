@@ -170,6 +170,17 @@ func (c *Config) validateIdentity(p *problems) {
 	if id.SigningKeyFile == "" {
 		p.addf("identity.signing_key_file", "is required")
 	}
+	for i, f := range id.PreviousKeyFiles {
+		field := fmt.Sprintf("identity.previous_key_files[%d]", i)
+		switch {
+		case f == "":
+			p.addf(field, "is empty")
+		case f == id.SigningKeyFile:
+			p.addf(field, "is the active signing key")
+		case slices.Index(id.PreviousKeyFiles, f) < i:
+			p.addf(field, "duplicate %q", f)
+		}
+	}
 	if id.TTL <= 0 || id.TTL > maxIdentityTTL {
 		p.addf("identity.ttl", "must be in (0, %v], got %v", maxIdentityTTL, id.TTL)
 	}

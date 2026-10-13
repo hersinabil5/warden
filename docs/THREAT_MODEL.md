@@ -25,7 +25,7 @@ Update this whenever a change adds, removes, or weakens a mitigation.
 | T3 | Token forgery or substitution | Signature via JWKS with pinned asymmetric algs (no `none`/`HS*`, D8); `iss`, `aud`, `exp`; `nonce` bound to the pre-auth cookie; `iat` within the login window; `azp`; `sub` required; groups claim type-checked; unverified email dropped (D12) | M2 | done |
 | T4 | Open redirect via return URL | Return URL must be a literal `https://` URL on a configured route host and Warden's public port; `\`, whitespace, control chars, userinfo and other schemes rejected; redirect goes to a canonical URL rebuilt from the parsed parts; fuzzed (D11) | M2 | done |
 | T5 | Policy bypass via path tricks | Raw request target normalized once before routing, `/.warden/` dispatch, auth and policy; `.`/`..`/`//` resolved; encoded `/` and `\`, `\`, NUL/control characters, bad or overlong UTF-8, double encoding and `;` rejected with 400; the upstream gets exactly the normalized path; prefixes match whole segments; optional case-insensitive matching (D15). Fuzzed | M3 | done |
-| T6 | Identity header spoofing | Every identity header stripped before proxying (built-in list, `X-Warden-*`, `X-Auth-Request-*`, `strip_headers`), matched case-insensitively with `_` folded to `-`; signed short-lived assertion | M4 | partial |
+| T6 | Identity header spoofing | Every identity header stripped before proxying (built-in list, `X-Warden-*`, `X-Auth-Request-*`, `strip_headers`), matched case-insensitively with `_` folded to `-`; then a signed ES256 assertion per request (`typ`-pinned, `aud` = route host, ≤ 60 s, `jti`), verifiable via the public JWKS (D17) | M4 | done |
 | T7 | Bypassing Warden to reach upstreams directly | mTLS to upstreams; upstreams on private network | M4, M7 | planned |
 | T8 | Access persists after user removal | Server-side sessions, revocation, periodic group refresh | M5 | planned |
 | T9 | Stolen session cookie | Opaque 256-bit IDs, only hashes in Redis; idle + absolute TTL checked on every read; app sessions bound to their host and revoked with the main session (D10). HttpOnly/Secure/SameSite host-only cookies; revocation API in M5 | M2, M5 | partial |
@@ -49,6 +49,7 @@ Update this whenever a change adds, removes, or weakens a mitigation.
 | T27 | Login CSRF / session swap on app hosts via a forwarded handshake code | Code bound to an app-host `__Host-` cookie (only its hash travels), redeemable once within 30s on the issuing host only; no code issued without a binding (D13) | M2 | done |
 | T28 | Upstream stealing or planting Warden cookies | Warden cookies stripped from requests to upstreams; upstream `Set-Cookie` for Warden names dropped (D13) | M2 | done |
 | T29 | Logout CSRF / forced logout | POST-only logout on the auth host; cross-origin `Origin`/`Sec-Fetch-Site` refused; SameSite=Lax cookie (D14) | M2 | done |
+| T30 | Assertion replay or confusion (token for app A used at app B; ID token passed as an assertion) | `aud` = one route host; explicit `typ` checked by verifiers; 60 s lifetime; ES256 only; `kid` from a published set (D17) | M4 | done |
 
 ## Out of scope (explicitly not defended)
 

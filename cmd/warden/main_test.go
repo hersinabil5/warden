@@ -35,6 +35,7 @@ import (
 	"github.com/alicebob/miniredis/v2"
 
 	"github.com/hersinabil5/warden/internal/authn/testidp"
+	"github.com/hersinabil5/warden/internal/identity"
 )
 
 // syncBuffer is a bytes.Buffer safe for concurrent writes and reads.
@@ -118,6 +119,7 @@ func newTestEnvWithIdP(t *testing.T, content string, idp *testidp.IdP) testEnv {
 		`listen: ":8443"`, `listen: "`+env.httpsAddr+`"`+"\nhttp_redirect_listen: \""+env.redirectAddr+`"`,
 		"cert_file: cert.pem", "cert_file: "+certPath,
 		"key_file: key.pem", "key_file: "+keyPath,
+		"signing_key_file: signing.pem", "signing_key_file: "+keyPath, // the test TLS key is P-256 too
 		"issuer: https://idp.example.test/realms/warden", "issuer: "+idp.Issuer,
 		`redis_addr: "localhost:6379"`, `redis_addr: "`+miniredis.RunT(t).Addr()+`"`,
 	).Replace(content)
@@ -866,5 +868,56 @@ func TestRunFailsWhenPortTaken(t *testing.T) {
 	err = run(t.Context(), []string{"-config", env.path}, &out, testGetenv, nil)
 	if err == nil || !strings.Contains(err.Error(), "listening on") {
 		t.Fatalf("err = %v, want listen error", err)
+	}
+}
+
+// M4: the upstream gets a signed assertion that verifies against Warden's
+// published JWKS, and a forged header from the client never survives.
+func TestRunAssertsIdentityEndToEnd(t *testing.T) {
+	var mu sync.Mutex
+	var got []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		got = append(got, r.Header.Values("X-Warden-Identity")...)
+		mu.Unlock()
+	}))
+	defer upstream.Close()
+	idp := testidp.New(t)
+	idp.SetClientSecret(testSecret)
+	env := newTestEnvWithIdP(t, strings.Replace(minimalConfig, "http://127.0.0.1:9001", upstream.URL, 1), idp)
+	startRun(t, "-config", env.path)
+	_, port := splitPort(t, env.httpsAddr)
+
+	b := browserFor(t, env)
+	if final, hops := browse(t, b, "https://app.example.test:"+port+"/"); final.StatusCode != http.StatusOK {
+		t.Fatalf("login: %d\n%s", final.StatusCode, strings.Join(hops, "\n"))
+	}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://app.example.test:"+port+"/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Warden-Identity", "forged")
+	req.Header.Set("X-Forwarded-Email", "admin@example.test")
+	resp, err := b.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 2 {
+		t.Fatalf("upstream saw %d identity headers over 2 requests, want 2: %q", len(got), got)
+	}
+	keys := identity.NewRemoteKeys(b, "https://auth.example.test:"+port+"/.well-known/jwks.json", identity.RemoteKeysOptions{})
+	v := &identity.Verifier{Issuer: "https://auth.example.test:" + port, Audience: "app.example.test", Keys: keys.Key}
+	for _, raw := range got {
+		id, err := v.Verify(t.Context(), raw)
+		if err != nil {
+			t.Fatalf("assertion %q: %v", raw, err)
+		}
+		if id.Username != "alice" || id.Subject != "user-1" {
+			t.Errorf("identity = %+v", id)
+		}
 	}
 }

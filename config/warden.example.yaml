@@ -28,7 +28,8 @@ session:
 
 identity:
   header: X-Warden-Identity
-  signing_key_file: deploy/certs/identity-signing-key.pem   # ES256 private key
+  signing_key_file: deploy/certs/identity-signing-key.pem   # ES256 (P-256) private key; kid = its RFC 7638 thumbprint
+  previous_key_files: []   # rotation: move the old signing key here so assertions it signed still verify
   ttl: 60s                 # max 60s
 
 strip_headers:            # in addition to the built-in list

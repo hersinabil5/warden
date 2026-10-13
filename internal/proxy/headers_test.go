@@ -155,7 +155,7 @@ func TestRequestIDsAreUnique(t *testing.T) {
 func TestRequestLogLine(t *testing.T) {
 	up := newEcho(t)
 	var buf bytes.Buffer
-	h, err := New(testConfig(t, up.URL), Options{
+	h, err := New(testConfig(t, up.URL), Options{Identity: testIdentity(t),
 		Authenticator: allowAll{},
 		Logger:        slog.New(slog.NewJSONHandler(&buf, nil)),
 	})

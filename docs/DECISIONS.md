@@ -371,3 +371,39 @@ default, and with no MFA user nothing could pass an MFA rule. M7's step-up needs
 **Consequences:** alice's MFA login yields `amr: ["pwd","otp"]` and passes Grafana's `/admin`
 rule; bob's yields `["pwd"]`. A real deployment enrolls OTP per user and must configure the same
 references and mapper. Realm changes apply only when the Keycloak container is recreated.
+
+## D17: Signed identity assertion and JWKS
+
+**Context:** Upstreams need to know who the user is, and must be able to tell Warden's word apart
+from a header a client typed (invariant 2) or a token minted for another app.
+
+**Decision:**
+- **Strip, then inject.** Before proxying, Warden deletes every identity header a client sent: a
+  built-in list (`X-Forwarded-User`/`-Email`/`-Groups`/..., `Remote-User`, Grafana's
+  `X-Webauth-*`), the `X-Warden-*` and `X-Auth-Request-*` families, and `strip_headers`. Names are
+  matched case-insensitively with `_` folded to `-`, because WSGI, CGI and some proxies read
+  `X_Forwarded_Email` as `X-Forwarded-Email`. `Authorization` is the app's own and is kept.
+- **Assertion.** After the policy allows a request, Warden signs a JWT for it and sends it in
+  `identity.header` (`X-Warden-Identity`): ES256 (P-256), header `typ: warden-identity+jwt`
+  (explicit typing, RFC 8725, so no ID or access token can pass as one) and `kid`. Claims: `iss` =
+  the auth origin (`https://auth.warden.localhost:8443`), `aud` = the route host (one value),
+  `sub`, `preferred_username`, `email` (verified only, omitted otherwise), `groups` (always a
+  list), `iat` = `nbf`, `exp` = `iat` + `identity.ttl` (at most 60 s), and a 128-bit random `jti`.
+  A new assertion per request; if signing fails the request gets a 500 and is not proxied.
+- **Keys and rotation.** The `kid` is the key's RFC 7638 thumbprint, so it needs no config and
+  changes with the key. `identity.previous_key_files` lists retired keys (old private key files or
+  public keys) that stay in the JWKS for verification. Rotate by generating a new key, moving the
+  old file to `previous_key_files`, and restarting; drop it later. Startup fails on a non-P-256
+  key or a duplicate.
+- **JWKS** at `https://<auth>/.well-known/jwks.json`, public, `Cache-Control: max-age=300`, public
+  keys only. On app hosts that path belongs to the app.
+- **Verifying** (`identity.Verifier`, used by `examples/upstream`): ES256 only, the `typ`, a known
+  `kid`, the signature, `iss`, exactly one `aud` equal to the app's host, `exp`/`nbf`/`iat` with
+  5 s leeway, lifetime ≤ 60 s, `sub` and `jti` present. `identity.RemoteKeys` caches the JWKS and
+  refetches on an unknown `kid` at most every 30 s, keeps only ES256 P-256 signing keys, and
+  caps the response at 1 MiB.
+
+**Consequences:** An assertion leaked from one app can't be replayed at another (`aud`), and
+expires within a minute. Within that minute it could be replayed at the same app; `jti` lets an
+app reject repeats if that matters, but Warden doesn't require it. Upstreams still have to refuse
+traffic that bypasses Warden; that's mTLS (D18).

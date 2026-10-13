@@ -127,6 +127,16 @@ func NewHandler(cfg *config.Config, p *Provider, opts HandlerOptions) (*Handler,
 	return h, nil
 }
 
+// AuthOrigin is the public https origin of the auth host, for example
+// https://auth.warden.localhost:8443. It is the identity assertion issuer.
+func AuthOrigin(cfg *config.Config) (string, error) {
+	port, err := publicPort(cfg.Listen)
+	if err != nil {
+		return "", err
+	}
+	return origin(cfg.Auth.Domain, port), nil
+}
+
 // publicPort is the HTTPS port browsers use, taken from the listen address.
 // URLs Warden builds (redirect_uri, return URLs) come from config, never from
 // the request's Host header.

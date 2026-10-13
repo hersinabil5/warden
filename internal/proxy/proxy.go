@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/hersinabil5/warden/internal/config"
+	"github.com/hersinabil5/warden/internal/identity"
 	"github.com/hersinabil5/warden/internal/pathnorm"
 	"github.com/hersinabil5/warden/internal/policy"
 	"github.com/hersinabil5/warden/internal/session"
@@ -20,6 +21,20 @@ import (
 // reservedPrefix is Warden's own path namespace on every host. Requests under
 // it are handled by Warden and never proxied (docs/DECISIONS.md D7).
 const reservedPrefix = "/.warden"
+
+// JWKSPath serves the identity assertion keys on the auth host. It is the
+// standard well-known location, outside /.warden/, so upstreams and tools
+// find it without configuration.
+const JWKSPath = "/.well-known/jwks.json"
+
+// Asserter signs the identity assertion for one upstream host
+// (identity.Signer).
+type Asserter interface {
+	Assert(c identity.Claims, audience string) (string, error)
+}
+
+// assertionKey carries the signed assertion from route to Rewrite.
+type assertionKey struct{}
 
 // HealthzPath is a liveness check served on every host, with or without
 // authentication. It reports only that the process is serving.
@@ -49,6 +64,11 @@ type Options struct {
 	TransportTimeouts TransportTimeouts
 	// Now is the clock for policy evaluation; nil means time.Now.
 	Now func() time.Time
+	// Identity signs the assertion sent to upstreams. Required.
+	Identity Asserter
+	// JWKS serves the assertion keys at JWKSPath on the auth host. Nil
+	// leaves that path 404.
+	JWKS http.Handler
 }
 
 // Handler routes requests by Host to upstream reverse proxies.
@@ -57,6 +77,8 @@ type Handler struct {
 	authDomain string
 	auth       http.Handler
 	authn      Authenticator
+	identity   Asserter
+	jwks       http.Handler
 	now        func() time.Time
 	logger     *slog.Logger
 }
@@ -69,11 +91,20 @@ type route struct {
 
 // New builds a Handler from a validated config.
 func New(cfg *config.Config, opts Options) (*Handler, error) {
+	if opts.Identity == nil {
+		return nil, errors.New("no identity asserter")
+	}
+	idHeader := cfg.Identity.Header
+	if idHeader == "" {
+		return nil, errors.New("no identity header configured")
+	}
 	h := &Handler{
 		routes:     make(map[string]route, len(cfg.Routes)),
 		authDomain: cfg.Auth.Domain,
 		auth:       opts.Auth,
 		authn:      opts.Authenticator,
+		identity:   opts.Identity,
+		jwks:       opts.JWKS,
 		now:        opts.Now,
 		logger:     opts.Logger,
 	}
@@ -107,6 +138,9 @@ func New(cfg *config.Config, opts Options) (*Handler, error) {
 				// Strip, then inject (invariant 2).
 				idHeaders.strip(pr.Out.Header)
 				rewriteHeaders(pr)
+				if tok, ok := pr.In.Context().Value(assertionKey{}).(string); ok {
+					pr.Out.Header.Set(idHeader, tok)
+				}
 				stripCookies(pr.Out.Header, cookies)
 			},
 			ModifyResponse: func(res *http.Response) error {
@@ -202,6 +236,14 @@ func (h *Handler) route(w http.ResponseWriter, r *http.Request, host, id string)
 		serveHealthz(w, r, id)
 		return
 	}
+	if host == h.authDomain && r.URL.Path == JWKSPath {
+		if h.jwks == nil {
+			writePage(w, http.StatusNotFound, id)
+			return
+		}
+		h.jwks.ServeHTTP(w, r)
+		return
+	}
 	rt, isRoute := h.routes[host]
 	if r.URL.Path == reservedPrefix || strings.HasPrefix(r.URL.Path, reservedPrefix+"/") {
 		// Warden's own endpoints, on hosts Warden serves. The auth handler
@@ -237,7 +279,17 @@ func (h *Handler) route(w http.ResponseWriter, r *http.Request, host, id string)
 	}
 	h.logger.Debug("access allowed", "request_id", id, "host", host, "path", r.URL.Path,
 		"user", username(sess), "rule", d.Rule)
-	rt.proxy.ServeHTTP(w, r)
+	// Signed per request, for this host only (aud), so an assertion one
+	// upstream receives is useless at another.
+	tok, err := h.identity.Assert(identity.Claims{
+		Subject: sess.Subject, Username: sess.Username, Email: sess.Email, Groups: sess.Groups,
+	}, host)
+	if err != nil {
+		h.logger.Error("signing identity assertion", "request_id", id, "host", host, "err", err)
+		writePage(w, http.StatusInternalServerError, id)
+		return
+	}
+	rt.proxy.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), assertionKey{}, tok)))
 }
 
 // subject is the policy view of a session; nil stays nil (and is denied).
