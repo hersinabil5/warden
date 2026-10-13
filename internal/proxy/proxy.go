@@ -125,9 +125,9 @@ func New(cfg *config.Config, opts Options) (*Handler, error) {
 		if err != nil {
 			return nil, fmt.Errorf("route %s: %w", r.Host, err)
 		}
-		if r.UpstreamTLS != nil {
-			opts.Logger.Warn("upstream_tls is not implemented until M4; route fails closed (every request gets 502)",
-				"host", r.Host)
+		transport, err := newTransport(tt, r.UpstreamTLS)
+		if err != nil {
+			return nil, fmt.Errorf("route %s: %w", r.Host, err)
 		}
 		target, host := r.UpstreamURL, r.Host
 		h.routes[r.Host] = route{policy: pol, proxy: &httputil.ReverseProxy{
@@ -153,7 +153,7 @@ func New(cfg *config.Config, opts Options) (*Handler, error) {
 			ErrorHandler: func(w http.ResponseWriter, req *http.Request, err error) {
 				h.upstreamError(w, req, host, err)
 			},
-			Transport: newTransport(tt, r.UpstreamTLS != nil),
+			Transport: transport,
 			ErrorLog:  slog.NewLogLogger(opts.Logger.Handler(), slog.LevelWarn),
 		}}
 	}

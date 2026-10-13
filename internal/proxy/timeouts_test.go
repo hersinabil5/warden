@@ -119,28 +119,11 @@ func TestUntrustedUpstreamCertificate(t *testing.T) {
 	assertBadGateway(t, serve(h, req))
 }
 
-// Until mTLS lands (M4), routes with upstream_tls fail closed rather than
-// falling back to the system roots.
-func TestUpstreamTLSFailsClosedUntilM4(t *testing.T) {
-	up := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, "should not be reached")
-	}))
-	defer up.Close()
-
-	cfg := testConfig(t, up.URL)
-	cfg.Routes[0].UpstreamTLS = &config.UpstreamTLS{CAFile: "ca.pem"}
-	var logs bytes.Buffer
-	h := newFastHandler(t, cfg, &logs)
-	if !strings.Contains(logs.String(), "fails closed") {
-		t.Errorf("no startup warning for upstream_tls:\n%s", logs.String())
-	}
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
-	req.Host = "app.example.test"
-	assertBadGateway(t, serve(h, req))
-}
-
 func TestTransportSettings(t *testing.T) {
-	tr := newTransport(DefaultTransportTimeouts, false)
+	tr, err := newTransport(DefaultTransportTimeouts, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	// http.DefaultTransport honors HTTP_PROXY; ours must not.
 	if tr.Proxy != nil {
 		t.Error("transport reads proxy settings from the environment")

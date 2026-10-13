@@ -3,9 +3,14 @@ package proxy
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
+	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"time"
+
+	"github.com/hersinabil5/warden/internal/config"
 )
 
 // TransportTimeouts bound every phase of an upstream request (invariant 10).
@@ -30,13 +35,16 @@ var DefaultTransportTimeouts = TransportTimeouts{
 // http.DefaultTransport honors HTTP_PROXY, which would let an environment
 // variable silently reroute upstream traffic.
 //
-// failClosedTLS is for routes configured with upstream_tls before mTLS exists
-// (M4): an empty root pool makes every TLS handshake fail rather than fall back
-// to the system roots.
-func newTransport(t TransportTimeouts, failClosedTLS bool) *http.Transport {
+// With upstream_tls the route uses mTLS (D18): the upstream's certificate
+// must chain to ca_file alone (never the system roots), and Warden presents
+// its client certificate.
+func newTransport(t TransportTimeouts, up *config.UpstreamTLS) (*http.Transport, error) {
 	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
-	if failClosedTLS {
-		tlsCfg.RootCAs = x509.NewCertPool()
+	if up != nil {
+		var err error
+		if tlsCfg, err = upstreamTLSConfig(up); err != nil {
+			return nil, err
+		}
 	}
 	return &http.Transport{
 		Proxy: nil,
@@ -50,5 +58,25 @@ func newTransport(t TransportTimeouts, failClosedTLS bool) *http.Transport {
 		ExpectContinueTimeout: t.ExpectContinue,
 		IdleConnTimeout:       t.IdleConn,
 		MaxIdleConnsPerHost:   32,
+	}, nil
+}
+
+func upstreamTLSConfig(up *config.UpstreamTLS) (*tls.Config, error) {
+	caPEM, err := os.ReadFile(up.CAFile)
+	if err != nil {
+		return nil, fmt.Errorf("upstream_tls.ca_file: %w", err)
 	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(caPEM) {
+		return nil, errors.New("upstream_tls.ca_file: no certificates found")
+	}
+	cfg := &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: roots}
+	if up.ClientCertFile != "" {
+		pair, err := tls.LoadX509KeyPair(up.ClientCertFile, up.ClientKeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("upstream_tls client certificate: %w", err)
+		}
+		cfg.Certificates = []tls.Certificate{pair}
+	}
+	return cfg, nil
 }
