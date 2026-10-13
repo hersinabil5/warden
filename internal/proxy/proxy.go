@@ -81,6 +81,7 @@ func New(cfg *config.Config, opts Options) (*Handler, error) {
 		h.now = time.Now
 	}
 	cookies := newCookieMatcher(opts.CookieNames)
+	idHeaders := newIdentityHeaders(cfg.StripHeaders, cfg.Identity.Header)
 	tt := opts.TransportTimeouts
 	if tt == (TransportTimeouts{}) {
 		tt = DefaultTransportTimeouts
@@ -103,6 +104,8 @@ func New(cfg *config.Config, opts Options) (*Handler, error) {
 				// In.URL carries the normalized path (ServeHTTP), so the
 				// upstream gets exactly the path policy saw (invariant 6).
 				pr.SetURL(target)
+				// Strip, then inject (invariant 2).
+				idHeaders.strip(pr.Out.Header)
 				rewriteHeaders(pr)
 				stripCookies(pr.Out.Header, cookies)
 			},
