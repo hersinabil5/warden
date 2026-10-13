@@ -336,6 +336,10 @@ func TestParseRejectsInvalid(t *testing.T) {
 		{"prefix fragment", "        - prefix: /admin", `        - prefix: "/admin#x"`, "routes[0].policy.paths[0].prefix"},
 		{"prefix NUL", "        - prefix: /admin", `        - prefix: "/admin\0"`, "routes[0].policy.paths[0].prefix"},
 		{"duplicate prefix", "            - groups: [admins]", "            - groups: [admins]\n        - prefix: /admin\n          allow:\n            - groups: [sre]", "duplicate"},
+		{"duplicate prefix with trailing slash", "            - groups: [admins]", "            - groups: [admins]\n        - prefix: /admin/\n          allow:\n            - groups: [sre]", "duplicate"},
+		{"duplicate prefix ignoring case", "      paths:\n        - prefix: /admin\n          allow:\n            - groups: [admins]",
+			"      case_insensitive_paths: true\n      paths:\n        - prefix: /admin\n          allow:\n            - groups: [admins]\n        - prefix: /ADMIN\n          allow:\n            - groups: [sre]", "duplicate"},
+		{"prefix path parameter", "        - prefix: /admin", "        - prefix: /admin;x", "routes[0].policy.paths[0].prefix"},
 
 		// Session.
 		{"redis addr without port", "  redis_addr: localhost:6379", "  redis_addr: localhost", "session.redis_addr"},

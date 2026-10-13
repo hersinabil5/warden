@@ -84,6 +84,9 @@ type UpstreamTLS struct {
 type Policy struct {
 	Allow []Rule     `yaml:"allow"`
 	Paths []PathRule `yaml:"paths"`
+	// CaseInsensitivePaths matches path prefixes ignoring case, for upstreams
+	// that treat /ADMIN as /admin. Off by default.
+	CaseInsensitivePaths bool `yaml:"case_insensitive_paths"`
 }
 
 type PathRule struct {

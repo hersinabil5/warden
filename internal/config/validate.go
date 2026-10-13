@@ -240,12 +240,21 @@ func validatePolicy(p *problems, field string, pol *Policy) {
 	for i := range pol.Paths {
 		pr := &pol.Paths[i]
 		pf := fmt.Sprintf("%s.paths[%d]", field, i)
+		// /admin and /admin/ cover the same paths, and so do /Admin and
+		// /admin when matching ignores case.
+		key := pr.Prefix
+		if key != "/" {
+			key = strings.TrimSuffix(key, "/")
+		}
+		if pol.CaseInsensitivePaths {
+			key = strings.ToLower(key)
+		}
 		if err := validPathPrefix(pr.Prefix); err != nil {
 			p.addf(pf+".prefix", "%v", err)
-		} else if seen[pr.Prefix] {
+		} else if seen[key] {
 			p.addf(pf+".prefix", "duplicate prefix %q", pr.Prefix)
 		}
-		seen[pr.Prefix] = true
+		seen[key] = true
 		validateRules(p, pf+".allow", pr.Allow)
 	}
 }
@@ -428,8 +437,8 @@ func validPathPrefix(prefix string) error {
 		return errors.New("must be valid UTF-8")
 	}
 	for _, r := range prefix {
-		if r < 0x20 || r == 0x7f || strings.ContainsRune(`%\?#`, r) {
-			return fmt.Errorf("%q must be a decoded path (no %%, \\, ?, #, or control characters)", prefix)
+		if r < 0x20 || r == 0x7f || strings.ContainsRune(`%\?#;`, r) {
+			return fmt.Errorf("%q must be a decoded path (no %%, \\, ?, #, ;, or control characters)", prefix)
 		}
 	}
 	segs := strings.Split(prefix[1:], "/")

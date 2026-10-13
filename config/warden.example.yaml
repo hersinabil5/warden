@@ -41,6 +41,7 @@ audit:
 # Routes: host is a lowercase DNS name (no port). upstream is scheme://host:port only,
 # no path, so the upstream sees exactly the normalized path policy evaluated.
 # Every allow rule needs at least one condition; empty rules and lists are errors.
+# Rules in a list are ORed, conditions in a rule are ANDed (docs/DECISIONS.md D15).
 routes:
   - host: whoami.warden.localhost
     upstream: http://127.0.0.1:9001
@@ -54,10 +55,11 @@ routes:
       allow:
         - groups: [sre, admins]
       paths:
-        - prefix: /admin
+        - prefix: /admin          # longest matching prefix wins; its rules replace the route's
           allow:
             - groups: [admins]
               require_mfa_within: 10m
+      case_insensitive_paths: false   # true for upstreams that treat /ADMIN as /admin
 
   - host: app.warden.localhost
     upstream: https://127.0.0.1:9003      # examples/upstream, mTLS from M4
