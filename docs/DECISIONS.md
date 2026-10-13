@@ -407,3 +407,30 @@ from a header a client typed (invariant 2) or a token minted for another app.
 expires within a minute. Within that minute it could be replayed at the same app; `jti` lets an
 app reject repeats if that matters, but Warden doesn't require it. Upstreams still have to refuse
 traffic that bypasses Warden; that's mTLS (D18).
+
+## D18: mTLS to upstreams and the dev internal CA
+
+**Context:** A signed assertion (D17) proves who the user is, but an upstream reachable on the
+network could still be called directly. Upstreams should accept connections only from Warden, and
+Warden should talk only to the real upstream.
+
+**Decision:**
+- **Warden side.** A route with `upstream_tls` uses TLS 1.3, trusts only `ca_file` (never the
+  system roots), and presents `client_cert_file`/`client_key_file`. Missing or unreadable files fail
+  startup; a failed handshake is a 502. Plain `https://` upstreams without `upstream_tls` use the
+  system roots.
+- **Upstream side** (`examples/upstream`): `RequireAndVerifyClientCert` against the internal CA,
+  plus the client certificate's CN must be `warden-proxy`, so another certificate from the same CA
+  (an upstream's server certificate) can't connect. Then every request also needs exactly one valid
+  assertion for its own host. Listens on 127.0.0.1 only.
+- **Dev CA** (`cmd/devca`, run by `make certs` / `make internal-ca`): an ECDSA P-256 CA, path
+  length 0, **name-constrained** to `localhost`, `127.0.0.0/8` and `::1`, valid one year, created
+  once and reused. Each run reissues 90-day leaves: Warden's client certificate (client-auth EKU
+  only) and the upstream's server certificate (server-auth EKU only, `localhost`/`127.0.0.1`/`::1`).
+  Keys are written 0600, atomically. A Go program rather than an openssl script, so it's portable
+  and tested.
+
+**Consequences:** Even a leaked dev CA key can't mint a certificate for a real site. Upstreams
+other than the example (whoami, Grafana) still run plain HTTP on loopback; putting them behind
+mTLS or on a private network is M7. Certificate rotation is "run `make internal-ca` and restart";
+there's no revocation for the dev CA.

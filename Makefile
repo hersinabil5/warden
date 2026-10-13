@@ -1,4 +1,4 @@
-.PHONY: dev-up dev-down certs run build test lint fuzz
+.PHONY: dev-up dev-down certs internal-ca run upstream build test lint fuzz
 
 -include .env
 export
@@ -24,12 +24,23 @@ certs:
 		umask 077 && openssl ecparam -name prime256v1 -genkey -noout -out $(SIGNING_KEY) && \
 		echo "generated $(SIGNING_KEY)"; \
 	fi
+	$(MAKE) internal-ca
+
+# Dev internal CA for mTLS (Warden -> upstreams). Keeps an existing CA and
+# reissues the leaf certificates (docs/DECISIONS.md D18).
+internal-ca:
+	umask 077 && go run ./cmd/devca -dir deploy/certs
 
 run:
 	@test -f $(DEV_CONFIG) || { \
 		echo "missing $(DEV_CONFIG); create it with: cp config/warden.example.yaml $(DEV_CONFIG)" >&2; \
 		exit 1; }
 	go run ./cmd/warden -config $(DEV_CONFIG)
+
+# examples/upstream on 127.0.0.1:9003 (route app.warden.localhost). It fetches
+# Warden's JWKS over HTTPS, so it trusts mkcert's root for that.
+upstream:
+	go run ./examples/upstream -jwks-ca "$$(mkcert -CAROOT)/rootCA.pem"
 
 build:
 	go build -o bin/warden ./cmd/warden

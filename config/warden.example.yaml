@@ -63,7 +63,7 @@ routes:
       case_insensitive_paths: false   # true for upstreams that treat /ADMIN as /admin
 
   - host: app.warden.localhost
-    upstream: https://127.0.0.1:9003      # examples/upstream, mTLS from M4
+    upstream: https://127.0.0.1:9003      # examples/upstream (make upstream); mTLS, D18
     upstream_tls:
       ca_file: deploy/certs/internal-ca.pem
       client_cert_file: deploy/certs/warden-client.pem
