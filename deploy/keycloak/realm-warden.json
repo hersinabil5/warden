@@ -3,6 +3,46 @@
   "enabled": true,
   "sslRequired": "external",
   "bruteForceProtected": true,
+  "browserFlow": "browser-amr",
+  "authenticationFlows": [
+    {
+      "alias": "browser-amr",
+      "description": "Browser login that records amr (pwd, otp) for Warden's require_mfa_within",
+      "providerId": "basic-flow",
+      "topLevel": true,
+      "builtIn": false,
+      "authenticationExecutions": [
+        { "authenticator": "auth-cookie", "authenticatorFlow": false, "requirement": "ALTERNATIVE", "priority": 10, "userSetupAllowed": false },
+        { "flowAlias": "browser-amr forms", "authenticatorFlow": true, "requirement": "ALTERNATIVE", "priority": 20, "userSetupAllowed": false }
+      ]
+    },
+    {
+      "alias": "browser-amr forms",
+      "description": "Password, then OTP for users who have it",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        { "authenticator": "auth-username-password-form", "authenticatorConfig": "amr-pwd", "authenticatorFlow": false, "requirement": "REQUIRED", "priority": 10, "userSetupAllowed": false },
+        { "flowAlias": "browser-amr otp", "authenticatorFlow": true, "requirement": "CONDITIONAL", "priority": 20, "userSetupAllowed": false }
+      ]
+    },
+    {
+      "alias": "browser-amr otp",
+      "description": "OTP when the user has an OTP credential",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        { "authenticator": "conditional-user-configured", "authenticatorFlow": false, "requirement": "REQUIRED", "priority": 10, "userSetupAllowed": false },
+        { "authenticator": "auth-otp-form", "authenticatorConfig": "amr-otp", "authenticatorFlow": false, "requirement": "REQUIRED", "priority": 20, "userSetupAllowed": false }
+      ]
+    }
+  ],
+  "authenticatorConfig": [
+    { "alias": "amr-pwd", "config": { "default.reference.value": "pwd", "default.reference.maxAge": "36000" } },
+    { "alias": "amr-otp", "config": { "default.reference.value": "otp", "default.reference.maxAge": "36000" } }
+  ],
   "groups": [
     { "name": "admins" },
     { "name": "sre" },
@@ -16,7 +56,15 @@
       "emailVerified": true,
       "firstName": "Alice",
       "lastName": "Admin",
-      "credentials": [{ "type": "password", "value": "alice", "temporary": false }],
+      "credentials": [
+        { "type": "password", "value": "alice", "temporary": false },
+        {
+          "type": "otp",
+          "userLabel": "dev authenticator (see docs/SETUP.md)",
+          "secretData": "{\"value\":\"WardenDevOtpAlice001\"}",
+          "credentialData": "{\"subType\":\"totp\",\"digits\":6,\"counter\":0,\"period\":30,\"algorithm\":\"HmacSHA1\"}"
+        }
+      ],
       "groups": ["/admins", "/sre"]
     },
     {
@@ -48,6 +96,16 @@
         "post.logout.redirect.uris": "https://auth.warden.localhost:8443/*"
       },
       "protocolMappers": [
+        {
+          "name": "amr",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-amr-mapper",
+          "config": {
+            "id.token.claim": "true",
+            "access.token.claim": "false",
+            "introspection.token.claim": "false"
+          }
+        },
         {
           "name": "groups",
           "protocol": "openid-connect",

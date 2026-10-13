@@ -29,7 +29,7 @@ Update this whenever a change adds, removes, or weakens a mitigation.
 | T7 | Bypassing Warden to reach upstreams directly | mTLS to upstreams; upstreams on private network | M4, M7 | planned |
 | T8 | Access persists after user removal | Server-side sessions, revocation, periodic group refresh | M5 | planned |
 | T9 | Stolen session cookie | Opaque 256-bit IDs, only hashes in Redis; idle + absolute TTL checked on every read; app sessions bound to their host and revoked with the main session (D10). HttpOnly/Secure/SameSite host-only cookies; revocation API in M5 | M2, M5 | partial |
-| T10 | Weak authentication on sensitive paths | `require_mfa_within` checks `amr` (two factors or `mfa`) and `auth_time` recency; denied with 403 until step-up re-authentication (D15) | M3, M7 | partial |
+| T10 | Weak authentication on sensitive paths | `require_mfa_within` checks `amr` (two factors or `mfa`) and `auth_time` recency; Keycloak OTP + `amr` mapper in the dev realm (D16); denied with 403 until step-up re-authentication (D15) | M3, M7 | partial |
 | T11 | Brute force / abuse of auth endpoints | Rate limiting | M7 | planned |
 | T12 | Secrets leaking via logs | Never log tokens/cookies/codes; hashed identifiers only; client secret held in a self-redacting `config.Secret` and never echoed in config errors | all | partial (config: done) |
 | T13 | Admin dashboard CSRF / XSS | CSRF tokens, strict CSP, no inline scripts | M5, M6 | planned |

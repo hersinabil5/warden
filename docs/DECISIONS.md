@@ -352,3 +352,22 @@ needs exact meanings for prefixes, multiple rules, and MFA.
 path rule replaces the route rule, so a prefix meant to be *looser* (for example `/public`) is
 looser only for that subtree. Case-insensitive matching is opt-in per route, because folding
 everything would let `/Admin` rules capture unrelated paths on case-sensitive apps.
+
+## D16: Dev MFA: Keycloak OTP with `amr`
+
+**Context:** `require_mfa_within` (D15) reads the ID token's `amr`, but Keycloak sends none by
+default, and with no MFA user nothing could pass an MFA rule. M7's step-up needs this too.
+
+**Decision:** The realm import (`deploy/keycloak/realm-warden.json`) now:
+- binds a custom browser flow, `browser-amr`: cookie SSO, or password then OTP when the user has
+  an OTP credential. The password and OTP steps carry "Authentication Reference" configs (`pwd`,
+  `otp`, max age 10 h); Keycloak leaves `amr` empty without them, and treats a missing max age as
+  expired.
+- adds the `oidc-amr-mapper` to the `warden-proxy` client (ID token only).
+- gives `alice` a TOTP credential with a fixed secret (`WardenDevOtpAlice001`, base32
+  `K5QXEZDFNZCGK5SPORYEC3DJMNSTAMBR`), so the setup is reproducible and testable without a phone.
+  Like the realm's passwords and client secret, it is for the local dev realm only.
+
+**Consequences:** alice's MFA login yields `amr: ["pwd","otp"]` and passes Grafana's `/admin`
+rule; bob's yields `["pwd"]`. A real deployment enrolls OTP per user and must configure the same
+references and mapper. Realm changes apply only when the Keycloak container is recreated.
