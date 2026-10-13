@@ -16,6 +16,7 @@ var sessionTemplate = template.Must(template.New("session").Parse(`<!doctype htm
 {{if .User}}<h1>Signed in as {{.User}}</h1>
 <p>Email: {{if .Email}}{{.Email}}{{else}}(none verified){{end}}</p>
 <p>Groups: {{if .Groups}}{{.Groups}}{{else}}(none){{end}}</p>
+<form method="post" action="{{.LogoutPath}}"><button type="submit">Sign out</button></form>
 {{else}}<h1>Not signed in</h1>
 <p><a href="{{.LoginPath}}">Sign in</a></p>
 {{end}}</body>
@@ -26,8 +27,8 @@ var sessionTemplate = template.Must(template.New("session").Parse(`<!doctype htm
 // page after a login with no return URL.
 func (h *Handler) sessionPage(w http.ResponseWriter, r *http.Request) {
 	data := struct {
-		User, Email, Groups, LoginPath string
-	}{LoginPath: LoginPath}
+		User, Email, Groups, LoginPath, LogoutPath string
+	}{LoginPath: LoginPath, LogoutPath: LogoutPath}
 	if c, err := r.Cookie(h.cookieName); err == nil {
 		sess, gerr := h.sessions.Get(r.Context(), c.Value)
 		switch {
@@ -38,16 +39,16 @@ func (h *Handler) sessionPage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeHTML(w, http.StatusOK, sessionTemplate, data)
+	writeHTML(w, http.StatusOK, sessionTemplate, data, h.formAction)
 }
 
 // writeHTML renders a Warden page with the same hardening as error pages.
-func writeHTML(w http.ResponseWriter, code int, t *template.Template, data any) {
+func writeHTML(w http.ResponseWriter, code int, t *template.Template, data any, formAction string) {
 	hdr := w.Header()
 	hdr.Set("Content-Type", "text/html; charset=utf-8")
 	hdr.Set("Cache-Control", "no-store")
 	hdr.Set("X-Content-Type-Options", "nosniff")
-	hdr.Set("Content-Security-Policy", "default-src 'none'; form-action 'self'; frame-ancestors 'none'")
+	hdr.Set("Content-Security-Policy", "default-src 'none'; form-action "+formAction+"; frame-ancestors 'none'")
 	w.WriteHeader(code)
 	_ = t.Execute(w, data)
 }

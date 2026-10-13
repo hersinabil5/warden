@@ -287,3 +287,24 @@ that login exists, D6's "proxy without authentication" flag is no longer needed.
 **Consequences:** Every app needs one extra redirect per session (D1). The binding cookie is shared
 by the tabs of one browser on a host, so parallel logins work. An app that relies on reading a
 cookie named like Warden's won't see it.
+
+## D14: Logout
+
+**Context:** Logout must end access everywhere at once (invariant 8). It's also a state-changing
+endpoint, so a cross-site page must not be able to trigger it (logout CSRF).
+
+**Decision:** `POST /.warden/logout` on the auth host only. `GET` and other methods get 405, so an
+`<img>` or link can't log anyone out. Requests a browser marks as cross-origin (`Sec-Fetch-Site`
+other than `same-origin`/`none`, or an `Origin` that isn't the auth origin, including `null`) get
+403. This sits on top of the `SameSite=Lax` cookie, which cross-site POSTs don't carry anyway.
+Logout clears the cookie first, then deletes the main session; app sessions die with it (D10). If
+Redis fails, the cookie is still cleared and the user sees a 500, so they know revocation didn't
+happen. With `auth.logout_at_idp: true`, Warden then redirects (303) to the IdP's
+`end_session_endpoint` with `client_id` and a fixed `post_logout_redirect_uri` (the session page).
+It sends no ID token, so Keycloak asks the user to confirm. Startup fails if the option is on but
+the IdP has no end-session endpoint. The session page's CSP `form-action` includes the IdP origin,
+because Chrome applies it to the redirect after the form POST.
+
+**Consequences:** Without `logout_at_idp`, the IdP session survives, and the next login is silent
+SSO. App-host cookies stay in the browser but are dead; the next request clears them and starts a
+new login.

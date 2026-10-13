@@ -18,6 +18,7 @@ auth:
   id_token_algs: [RS256]                   # pinned ID token algs (Keycloak default); none/HS* are rejected
   groups_claim: groups
   group_refresh_interval: 5m
+  logout_at_idp: true                      # also end the Keycloak session on logout (needs end_session_endpoint)
 
 session:
   redis_addr: localhost:6379

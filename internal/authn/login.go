@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -46,10 +47,14 @@ type Handler struct {
 	returns     *returnURLs
 	authDomain  string
 	port        string
-	sealer      *cookieSealer
-	logger      *slog.Logger
-	errorPage   func(http.ResponseWriter, *http.Request, int)
-	now         func() time.Time
+	// idpLogoutURL is set when auth.logout_at_idp is on.
+	idpLogoutURL string
+	// formAction is the CSP form-action for pages with the logout form.
+	formAction string
+	sealer     *cookieSealer
+	logger     *slog.Logger
+	errorPage  func(http.ResponseWriter, *http.Request, int)
+	now        func() time.Time
 }
 
 // NewHandler builds the auth-host handler from a validated config and a
@@ -88,7 +93,7 @@ func NewHandler(cfg *config.Config, p *Provider, opts HandlerOptions) (*Handler,
 	for _, r := range cfg.Routes {
 		hosts = append(hosts, r.Host)
 	}
-	return &Handler{
+	h := &Handler{
 		oauth: oauth2.Config{
 			ClientID:     cfg.Auth.ClientID,
 			ClientSecret: cfg.Auth.ClientSecret.Reveal(),
@@ -107,7 +112,19 @@ func NewHandler(cfg *config.Config, p *Provider, opts HandlerOptions) (*Handler,
 		logger:      opts.Logger,
 		errorPage:   opts.ErrorPage,
 		now:         opts.Now,
-	}, nil
+	}
+	h.formAction = "'self'"
+	if cfg.Auth.LogoutAtIdP {
+		h.idpLogoutURL, err = idpLogoutURL(p, cfg.Auth.ClientID, origin(cfg.Auth.Domain, port)+SessionPath)
+		if err != nil {
+			return nil, err
+		}
+		// Chrome applies form-action to the redirect after the POST.
+		if u, perr := url.Parse(h.idpLogoutURL); perr == nil {
+			h.formAction += " " + u.Scheme + "://" + u.Host
+		}
+	}
+	return h, nil
 }
 
 // publicPort is the HTTPS port browsers use, taken from the listen address.
@@ -133,6 +150,7 @@ func origin(host, port string) string {
 // OIDC endpoints only on the auth host, the handshake only on route hosts.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	host := requestHost(r)
+	method := http.MethodGet
 	var serve http.HandlerFunc
 	switch {
 	case host == h.authDomain && r.URL.Path == LoginPath:
@@ -143,12 +161,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		serve = h.sessionPage
 	case h.returns.hosts[host] && r.URL.Path == HandshakePath:
 		serve = func(w http.ResponseWriter, r *http.Request) { h.redeemHandshake(w, r, host) }
+	case host == h.authDomain && r.URL.Path == LogoutPath:
+		method = http.MethodPost
+		serve = h.logout
 	default:
 		h.errorPage(w, r, http.StatusNotFound)
 		return
 	}
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", http.MethodGet)
+	if r.Method != method {
+		w.Header().Set("Allow", method)
 		h.errorPage(w, r, http.StatusMethodNotAllowed)
 		return
 	}

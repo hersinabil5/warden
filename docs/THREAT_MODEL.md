@@ -48,6 +48,7 @@ Update this whenever a change adds, removes, or weakens a mitigation.
 | T26 | Authorize-request tampering via login parameters or Host header (redirect_uri, client_id, scope, response_type, PKCE method) | Authorize URL built only from config and discovery; request query and Host ignored (D9) | M2 | done |
 | T27 | Login CSRF / session swap on app hosts via a forwarded handshake code | Code bound to an app-host `__Host-` cookie (only its hash travels), redeemable once within 30s on the issuing host only; no code issued without a binding (D13) | M2 | done |
 | T28 | Upstream stealing or planting Warden cookies | Warden cookies stripped from requests to upstreams; upstream `Set-Cookie` for Warden names dropped (D13) | M2 | done |
+| T29 | Logout CSRF / forced logout | POST-only logout on the auth host; cross-origin `Origin`/`Sec-Fetch-Site` refused; SameSite=Lax cookie (D14) | M2 | done |
 
 ## Out of scope (explicitly not defended)
 

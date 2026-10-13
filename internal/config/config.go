@@ -37,6 +37,9 @@ type Auth struct {
 	IDTokenAlgs          []string      `yaml:"id_token_algs"` // pinned JWS algs; asymmetric only
 	GroupsClaim          string        `yaml:"groups_claim"`
 	GroupRefreshInterval time.Duration `yaml:"group_refresh_interval"`
+	// LogoutAtIdP also ends the IdP session on logout (RP-initiated logout).
+	// Requires the IdP to advertise end_session_endpoint.
+	LogoutAtIdP bool `yaml:"logout_at_idp"`
 }
 
 type Session struct {

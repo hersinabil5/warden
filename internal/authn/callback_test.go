@@ -32,7 +32,7 @@ type flowEnv struct {
 	logs     *syncBuffer
 }
 
-func newFlowEnv(t *testing.T) *flowEnv {
+func newFlowEnv(t *testing.T, mods ...func(*config.Config)) *flowEnv {
 	t.Helper()
 	idp := testidp.New(t)
 	auth := authConfig(idp.Issuer)
@@ -59,6 +59,9 @@ func newFlowEnv(t *testing.T) *flowEnv {
 		Auth:    auth,
 		Session: config.Session{CookieName: sessionCookie, AbsoluteTTL: 8 * time.Hour, IdleTimeout: time.Hour},
 		Routes:  []config.Route{{Host: "app.example.test"}, {Host: "other.example.test"}},
+	}
+	for _, m := range mods {
+		m(cfg)
 	}
 	h, err := NewHandler(cfg, p, HandlerOptions{CookieKey: key, Sessions: store, Logger: opts.Logger})
 	if err != nil {

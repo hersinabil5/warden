@@ -722,6 +722,25 @@ func TestRunLoginEndToEnd(t *testing.T) {
 			}
 		}
 	}
+
+	// Logout on the auth host revokes the app session on its next request.
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://auth.example.test:"+port+"/.warden/logout", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Origin", "https://auth.example.test:"+port)
+	out, err := b.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = out.Body.Close()
+	if out.StatusCode != http.StatusSeeOther {
+		t.Fatalf("logout = %d, want 303", out.StatusCode)
+	}
+	after := get(t, b, "https://app.example.test:"+port+"/dash?x=1")
+	if after.StatusCode != http.StatusFound || !strings.Contains(after.Header.Get("Location"), "/.warden/login?") {
+		t.Errorf("after logout = %d %q, want a login redirect", after.StatusCode, after.Header.Get("Location"))
+	}
 }
 
 // browse follows redirects from target with b until a non-redirect response,

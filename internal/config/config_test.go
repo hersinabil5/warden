@@ -136,6 +136,20 @@ func TestParseAllowsLocalHTTPIssuer(t *testing.T) {
 	}
 }
 
+func TestParseLogoutAtIdP(t *testing.T) {
+	cfg, err := Parse([]byte(edit(t, "  group_refresh_interval: 5m", "  group_refresh_interval: 5m\n  logout_at_idp: true")), testGetenv)
+	if err != nil || !cfg.Auth.LogoutAtIdP {
+		t.Fatalf("logout_at_idp: %v, %v", cfg, err)
+	}
+	if _, err := Parse([]byte(edit(t, "  group_refresh_interval: 5m", "  group_refresh_interval: 5m\n  logout_at_idp: yes please")), testGetenv); err == nil {
+		t.Error("non-boolean logout_at_idp accepted")
+	}
+	base, _ := Parse([]byte(baseYAML), testGetenv)
+	if base.Auth.LogoutAtIdP {
+		t.Error("logout_at_idp defaults to true")
+	}
+}
+
 func TestParseIDTokenAlgs(t *testing.T) {
 	for _, algs := range []string{"[RS256]", "[ES256]", "[RS256, ES256, PS256]", "[RS512, ES384, ES512, PS384, PS512, RS384]"} {
 		in := edit(t, "  id_token_algs: [RS256]", "  id_token_algs: "+algs)
