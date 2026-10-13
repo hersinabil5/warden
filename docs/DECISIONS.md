@@ -203,3 +203,20 @@ host the user visited.
 **Consequences:** Every authenticated request costs a Redis read and write for the main session
 (plus a read for the app pointer). Anyone who can read Redis gets refresh tokens but no usable
 cookies. Encrypting refresh tokens at rest is a possible later hardening.
+
+## D11: Return URLs are absolute, canonicalized, and route-host only
+
+**Context:** After login, Warden redirects to the URL the user originally asked for (`rd`). Browsers
+and Go's URL parser disagree on edge cases: `\` treated as `/`, stripped tabs and newlines,
+`https:evil.com`, userinfo (`a@evil.com`). Any disagreement can become an open redirect.
+
+**Decision:** `rd` must be a single parameter, at most 2048 bytes, contain no whitespace, control
+characters or `\`, start with the literal `https://`, have no userinfo, and name a configured route
+host (not the auth host) on Warden's public port, with the port optional. Relative URLs are
+rejected rather than resolved. Warden redirects to a URL rebuilt from the parsed parts
+(`https://<lowercase host>[:port]<path>?<query>`, fragment dropped), never the raw input, so what
+it redirects to is exactly what it checked. Anything else gets a 400. A fuzz test checks that every
+accepted URL lands on an allowed origin and re-validates to itself.
+
+**Consequences:** Warden builds absolute return URLs itself when it sends an app request to login,
+so legitimate flows always pass. Hand-written relative `rd` values don't work.

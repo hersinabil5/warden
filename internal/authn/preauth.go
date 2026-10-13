@@ -29,8 +29,9 @@ const preAuthNameStateChars = 16
 type preAuth struct {
 	State    string `json:"s"`
 	Nonce    string `json:"n"`
-	Verifier string `json:"v"` // PKCE code verifier
-	Expires  int64  `json:"e"` // Unix seconds
+	Verifier string `json:"v"`           // PKCE code verifier
+	Expires  int64  `json:"e"`           // Unix seconds
+	ReturnTo string `json:"r,omitempty"` // validated return URL; empty means the auth host's session page
 }
 
 // newPreAuth returns fresh random login state: 256-bit state and nonce from

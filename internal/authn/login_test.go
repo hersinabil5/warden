@@ -37,7 +37,7 @@ func newLoginEnv(t *testing.T, listen string) loginEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := NewHandler(&config.Config{Listen: listen, Auth: auth}, p, HandlerOptions{
+	h, err := NewHandler(&config.Config{Listen: listen, Auth: auth, Routes: []config.Route{{Host: "app.example.test"}}}, p, HandlerOptions{
 		CookieKey: key,
 		Logger:    opts.Logger,
 	})
@@ -266,5 +266,40 @@ func TestNewHandlerValidatesInputs(t *testing.T) {
 	}
 	if _, err := NewHandler(cfg, nil, HandlerOptions{CookieKey: make([]byte, 32)}); err == nil {
 		t.Error("nil provider accepted")
+	}
+}
+
+func TestLoginStoresValidatedReturnURL(t *testing.T) {
+	e := newLoginEnv(t, "127.0.0.1:8443")
+	rd := url.QueryEscape("https://APP.example.test/x?y=1")
+	_, c := e.login(t, "https://"+testAuthDomain+LoginPath+"?rd="+rd)
+	pa, err := e.h.sealer.open(c.Name, c.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pa.ReturnTo != "https://app.example.test:8443/x?y=1" {
+		t.Errorf("ReturnTo = %q, want the canonical URL", pa.ReturnTo)
+	}
+}
+
+func TestLoginRejectsBadReturnURLs(t *testing.T) {
+	e := newLoginEnv(t, "127.0.0.1:8443")
+	for _, q := range []string{
+		"rd=" + url.QueryEscape("https://evil.com"),
+		"rd=" + url.QueryEscape("//evil.com"),
+		"rd=" + url.QueryEscape("https:evil.com"),
+		"rd=" + url.QueryEscape(`/\evil.com`),
+		"rd=" + url.QueryEscape("javascript:alert(1)"),
+		"rd=",
+		"rd=" + url.QueryEscape("https://app.example.test/") + "&rd=" + url.QueryEscape("https://evil.com"),
+	} {
+		resp := e.do(t, http.MethodGet, "https://"+testAuthDomain+LoginPath+"?"+q)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400", q, resp.StatusCode)
+		}
+		if len(resp.Cookies()) != 0 || resp.Header.Get("Location") != "" {
+			t.Errorf("%s: started a login anyway", q)
+		}
 	}
 }

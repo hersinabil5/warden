@@ -45,3 +45,4 @@ lint:
 fuzz:
 	go test ./internal/pathnorm -run=^$$ -fuzz=Fuzz -fuzztime=30s
 	go test ./internal/policy -run=^$$ -fuzz=Fuzz -fuzztime=30s
+	go test ./internal/authn -run=^$$ -fuzz=FuzzReturnURL -fuzztime=30s

@@ -36,6 +36,7 @@ type HandlerOptions struct {
 // Handler serves the OIDC endpoints on the auth host.
 type Handler struct {
 	oauth     oauth2.Config
+	returns   *returnURLs
 	sealer    *cookieSealer
 	logger    *slog.Logger
 	errorPage func(http.ResponseWriter, *http.Request, int)
@@ -63,9 +64,13 @@ func NewHandler(cfg *config.Config, p *Provider, opts HandlerOptions) (*Handler,
 			http.Error(w, http.StatusText(code), code)
 		}
 	}
-	redirectURL, err := callbackURL(cfg.Auth.Domain, cfg.Listen)
+	port, err := publicPort(cfg.Listen)
 	if err != nil {
 		return nil, err
+	}
+	hosts := make([]string, 0, len(cfg.Routes))
+	for _, r := range cfg.Routes {
+		hosts = append(hosts, r.Host)
 	}
 	return &Handler{
 		// The secret is not needed to build the authorize URL; the token
@@ -73,9 +78,10 @@ func NewHandler(cfg *config.Config, p *Provider, opts HandlerOptions) (*Handler,
 		oauth: oauth2.Config{
 			ClientID:    cfg.Auth.ClientID,
 			Endpoint:    p.Endpoint,
-			RedirectURL: redirectURL,
+			RedirectURL: origin(cfg.Auth.Domain, port) + CallbackPath,
 			Scopes:      cfg.Auth.Scopes,
 		},
+		returns:   newReturnURLs(hosts, port),
 		sealer:    sealer,
 		logger:    opts.Logger,
 		errorPage: opts.ErrorPage,
@@ -83,18 +89,23 @@ func NewHandler(cfg *config.Config, p *Provider, opts HandlerOptions) (*Handler,
 	}, nil
 }
 
-// callbackURL is the fixed redirect_uri registered at the IdP. It comes from
-// config, never from the request's Host header.
-func callbackURL(domain, listen string) (string, error) {
+// publicPort is the HTTPS port browsers use, taken from the listen address.
+// URLs Warden builds (redirect_uri, return URLs) come from config, never from
+// the request's Host header.
+func publicPort(listen string) (string, error) {
 	_, port, err := net.SplitHostPort(listen)
 	if err != nil {
 		return "", fmt.Errorf("authn: listen address %q: %w", listen, err)
 	}
-	host := domain
-	if port != "443" {
-		host = net.JoinHostPort(domain, port)
+	return port, nil
+}
+
+// origin returns https://host[:port], omitting the default port.
+func origin(host, port string) string {
+	if port == "443" {
+		return "https://" + host
 	}
-	return "https://" + host + CallbackPath, nil
+	return "https://" + net.JoinHostPort(host, port)
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -115,11 +126,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // verifier sealed into a pre-auth cookie, then a redirect to the IdP. Nothing
 // from the request feeds the authorize URL.
 func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
+	returnTo, ok := h.returnTo(w, r)
+	if !ok {
+		return
+	}
 	pa, err := newPreAuth(h.now())
 	if err != nil {
 		h.fail(w, r, "generating login state", err)
 		return
 	}
+	pa.ReturnTo = returnTo
 	name := preAuthCookieName(pa.State)
 	value, err := h.sealer.seal(name, pa)
 	if err != nil {
@@ -142,6 +158,23 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	hdr.Set("Referrer-Policy", "no-referrer")
 	h.logger.Info("login started", "request_id", requestID(w), "state_hash", hashPrefix(pa.State))
 	http.Redirect(w, r, authURL, http.StatusFound)
+}
+
+// returnTo reads and validates the optional rd parameter (invariant 5). On
+// failure it writes a 400 and returns false.
+func (h *Handler) returnTo(w http.ResponseWriter, r *http.Request) (string, bool) {
+	rds := r.URL.Query()["rd"]
+	switch len(rds) {
+	case 0:
+		return "", true
+	case 1:
+		if v, err := h.returns.validate(rds[0]); err == nil {
+			return v, true
+		}
+	}
+	h.logger.Warn("rejected return URL", "request_id", requestID(w), "count", len(rds))
+	h.errorPage(w, r, http.StatusBadRequest)
+	return "", false
 }
 
 func (h *Handler) fail(w http.ResponseWriter, r *http.Request, what string, err error) {
