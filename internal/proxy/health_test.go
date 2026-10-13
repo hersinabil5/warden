@@ -11,26 +11,24 @@ func TestHealthz(t *testing.T) {
 	cfg := testConfig(t, up.URL)
 
 	tests := []struct {
-		name        string
-		allowUnauth bool
-		method      string
-		host, path  string
-		wantStatus  int
-		wantBody    string
+		name       string
+		method     string
+		host, path string
+		wantStatus int
+		wantBody   string
 	}{
-		{"GET on route host", true, http.MethodGet, "app.example.test", "/.warden/healthz", http.StatusOK, `{"status":"ok"}` + "\n"},
-		{"works without dev flag", false, http.MethodGet, "app.example.test", "/.warden/healthz", http.StatusOK, `{"status":"ok"}` + "\n"},
-		{"auth domain", false, http.MethodGet, "auth.example.test", "/.warden/healthz", http.StatusOK, `{"status":"ok"}` + "\n"},
-		{"unknown host", false, http.MethodGet, "anything.example", "/.warden/healthz", http.StatusOK, `{"status":"ok"}` + "\n"},
-		{"query ignored", false, http.MethodGet, "app.example.test", "/.warden/healthz?x=1", http.StatusOK, `{"status":"ok"}` + "\n"},
-		{"HEAD", false, http.MethodHead, "app.example.test", "/.warden/healthz", http.StatusOK, ""},
-		{"POST not allowed", false, http.MethodPost, "app.example.test", "/.warden/healthz", http.StatusMethodNotAllowed, ""},
-		{"trailing slash", false, http.MethodGet, "app.example.test", "/.warden/healthz/", http.StatusNotFound, ""},
-		{"longer name", false, http.MethodGet, "app.example.test", "/.warden/healthzz", http.StatusNotFound, ""},
+		{"GET on route host", http.MethodGet, "app.example.test", "/.warden/healthz", http.StatusOK, `{"status":"ok"}` + "\n"},
+		{"auth domain", http.MethodGet, "auth.example.test", "/.warden/healthz", http.StatusOK, `{"status":"ok"}` + "\n"},
+		{"unknown host", http.MethodGet, "anything.example", "/.warden/healthz", http.StatusOK, `{"status":"ok"}` + "\n"},
+		{"query ignored", http.MethodGet, "app.example.test", "/.warden/healthz?x=1", http.StatusOK, `{"status":"ok"}` + "\n"},
+		{"HEAD", http.MethodHead, "app.example.test", "/.warden/healthz", http.StatusOK, ""},
+		{"POST not allowed", http.MethodPost, "app.example.test", "/.warden/healthz", http.StatusMethodNotAllowed, ""},
+		{"trailing slash", http.MethodGet, "app.example.test", "/.warden/healthz/", http.StatusNotFound, ""},
+		{"longer name", http.MethodGet, "app.example.test", "/.warden/healthzz", http.StatusNotFound, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			h := newTestHandler(t, cfg, tt.allowUnauth)
+			h := newTestHandler(t, cfg)
 			before := up.hits.Load()
 			req := httptest.NewRequestWithContext(t.Context(), tt.method, tt.path, nil)
 			req.Host = tt.host

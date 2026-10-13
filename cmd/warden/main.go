@@ -75,8 +75,6 @@ func run(ctx context.Context, args []string, logOut io.Writer, getenv func(strin
 	fs.SetOutput(logOut)
 	configPath := fs.String("config", "", "path to the YAML config file (required)")
 	logLevel := fs.String("log-level", "info", "log level: debug, info, warn, error")
-	devSkipPolicy := fs.Bool("dev-skip-policy", false,
-		"DEV ONLY (removed in M3): proxy any authenticated request without policy checks; requires loopback listeners")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -148,7 +146,6 @@ func run(ctx context.Context, args []string, logOut io.Writer, getenv func(strin
 	}
 
 	handler, err := proxy.New(cfg, proxy.Options{
-		SkipPolicy:    *devSkipPolicy,
 		Logger:        logger,
 		Auth:          authHandler,
 		Authenticator: authHandler,
@@ -156,9 +153,6 @@ func run(ctx context.Context, args []string, logOut io.Writer, getenv func(strin
 	})
 	if err != nil {
 		return err
-	}
-	if *devSkipPolicy {
-		logger.Warn("DEV MODE: any signed-in user can reach every route (no policy); loopback listeners only")
 	}
 
 	var hooks []shutdownFunc

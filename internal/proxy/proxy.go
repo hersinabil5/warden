@@ -6,13 +6,14 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/http/httputil"
 	"strings"
 	"time"
 
 	"github.com/hersinabil5/warden/internal/config"
+	"github.com/hersinabil5/warden/internal/pathnorm"
+	"github.com/hersinabil5/warden/internal/policy"
 	"github.com/hersinabil5/warden/internal/session"
 )
 
@@ -33,12 +34,7 @@ type Authenticator interface {
 
 // Options configures a Handler.
 type Options struct {
-	// SkipPolicy proxies any authenticated request without evaluating route
-	// policy. It exists only until the policy engine lands (M3), requires
-	// loopback-only listeners, and is off by default (docs/DECISIONS.md D13).
-	// Authentication is always required.
-	SkipPolicy bool
-	Logger     *slog.Logger
+	Logger *slog.Logger
 	// Auth serves Warden's endpoints under /.warden/ on the auth host and on
 	// route hosts (the handshake). Nil leaves them 404.
 	Auth http.Handler
@@ -51,35 +47,38 @@ type Options struct {
 	// Transport timeouts for upstream connections; zero means
 	// DefaultTransportTimeouts.
 	TransportTimeouts TransportTimeouts
+	// Now is the clock for policy evaluation; nil means time.Now.
+	Now func() time.Time
 }
 
 // Handler routes requests by Host to upstream reverse proxies.
 type Handler struct {
-	routes     map[string]*httputil.ReverseProxy
+	routes     map[string]route
 	authDomain string
 	auth       http.Handler
 	authn      Authenticator
-	skipPolicy bool
+	now        func() time.Time
 	logger     *slog.Logger
+}
+
+// route is one configured host: its compiled policy and its reverse proxy.
+type route struct {
+	policy *policy.Policy
+	proxy  *httputil.ReverseProxy
 }
 
 // New builds a Handler from a validated config.
 func New(cfg *config.Config, opts Options) (*Handler, error) {
-	if opts.SkipPolicy {
-		for _, addr := range []string{cfg.Listen, cfg.HTTPRedirectListen} {
-			if addr != "" && !isLoopbackAddr(addr) {
-				return nil, fmt.Errorf("dev mode without policy requires loopback listeners; %q is not", addr)
-			}
-		}
-	}
-
 	h := &Handler{
-		routes:     make(map[string]*httputil.ReverseProxy, len(cfg.Routes)),
+		routes:     make(map[string]route, len(cfg.Routes)),
 		authDomain: cfg.Auth.Domain,
 		auth:       opts.Auth,
 		authn:      opts.Authenticator,
-		skipPolicy: opts.SkipPolicy,
+		now:        opts.Now,
 		logger:     opts.Logger,
+	}
+	if h.now == nil {
+		h.now = time.Now
 	}
 	cookies := newCookieMatcher(opts.CookieNames)
 	tt := opts.TransportTimeouts
@@ -90,13 +89,19 @@ func New(cfg *config.Config, opts Options) (*Handler, error) {
 		if r.UpstreamURL == nil {
 			return nil, fmt.Errorf("route %s: upstream URL not parsed", r.Host)
 		}
+		pol, err := policy.Compile(r.Policy)
+		if err != nil {
+			return nil, fmt.Errorf("route %s: %w", r.Host, err)
+		}
 		if r.UpstreamTLS != nil {
 			opts.Logger.Warn("upstream_tls is not implemented until M4; route fails closed (every request gets 502)",
 				"host", r.Host)
 		}
 		target, host := r.UpstreamURL, r.Host
-		h.routes[r.Host] = &httputil.ReverseProxy{
+		h.routes[r.Host] = route{policy: pol, proxy: &httputil.ReverseProxy{
 			Rewrite: func(pr *httputil.ProxyRequest) {
+				// In.URL carries the normalized path (ServeHTTP), so the
+				// upstream gets exactly the path policy saw (invariant 6).
 				pr.SetURL(target)
 				rewriteHeaders(pr)
 				stripCookies(pr.Out.Header, cookies)
@@ -113,7 +118,7 @@ func New(cfg *config.Config, opts Options) (*Handler, error) {
 			},
 			Transport: newTransport(tt, r.UpstreamTLS != nil),
 			ErrorLog:  slog.NewLogLogger(opts.Logger.Handler(), slog.LevelWarn),
-		}
+		}}
 	}
 	return h, nil
 }
@@ -137,22 +142,64 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"duration_ms", time.Since(start).Milliseconds(),
 		)
 	}()
-	h.route(rec, r, host, id)
-}
-
-func (h *Handler) route(w http.ResponseWriter, r *http.Request, host, id string) {
 	// The TLS session was negotiated for ServerName; refuse to use it for a
 	// different host.
 	if r.TLS != nil && r.TLS.ServerName != "" && !strings.EqualFold(r.TLS.ServerName, host) {
-		writePage(w, http.StatusMisdirectedRequest, id)
+		writePage(rec, http.StatusMisdirectedRequest, id)
 		return
 	}
+	// Everything below, routing, Warden's endpoints, policy, and the
+	// upstream, sees only the normalized path (invariant 6).
+	norm, err := normalizedPath(r)
+	if err != nil {
+		h.logger.Info("request path rejected", "request_id", id, "host", host, "reason", err.Error())
+		writePage(rec, http.StatusBadRequest, id)
+		return
+	}
+	r = withPath(r, norm)
+	h.route(rec, r, host, id)
+}
+
+// normalizedPath normalizes the path exactly as the client sent it.
+// r.URL.Path is already decoded, so an encoded "/" would be invisible there;
+// the raw request target still has it.
+func normalizedPath(r *http.Request) (string, error) {
+	raw, _, _ := strings.Cut(r.RequestURI, "?")
+	if !strings.HasPrefix(raw, "/") {
+		// Absolute-form ("https://host/path"), which servers must accept
+		// (RFC 9112, section 3.2.2). net/http already parsed it, so the path
+		// starts at the first "/" after the authority.
+		scheme, rest, ok := strings.Cut(raw, "://")
+		if !ok || scheme == "" {
+			// "*" (OPTIONS) or no request target at all.
+			return "", fmt.Errorf("%w: unsupported request target", pathnorm.ErrInvalid)
+		}
+		raw = "/"
+		if i := strings.IndexByte(rest, '/'); i >= 0 {
+			raw = rest[i:]
+		}
+	}
+	return pathnorm.Normalize(raw)
+}
+
+// withPath returns a shallow copy of r whose URL has path p and no RawPath,
+// so the URL re-encodes p unambiguously.
+func withPath(r *http.Request, p string) *http.Request {
+	r2 := *r
+	u := *r.URL
+	u.Path, u.RawPath = p, ""
+	r2.URL = &u
+	r2.RequestURI = u.RequestURI()
+	return &r2
+}
+
+func (h *Handler) route(w http.ResponseWriter, r *http.Request, host, id string) {
 
 	if r.URL.Path == HealthzPath {
 		serveHealthz(w, r, id)
 		return
 	}
-	rp, isRoute := h.routes[host]
+	rt, isRoute := h.routes[host]
 	if r.URL.Path == reservedPrefix || strings.HasPrefix(r.URL.Path, reservedPrefix+"/") {
 		// Warden's own endpoints, on hosts Warden serves. The auth handler
 		// decides which endpoint exists on which host.
@@ -172,16 +219,43 @@ func (h *Handler) route(w http.ResponseWriter, r *http.Request, host, id string)
 		writePage(w, http.StatusForbidden, id)
 		return
 	}
-	if _, ok := h.authn.Authenticate(w, r, host); !ok {
+	sess, ok := h.authn.Authenticate(w, r, host)
+	if !ok {
 		return
 	}
-	// Default deny (invariant 1): no policy engine yet (M3), so an
-	// authenticated request is proxied only in loopback dev mode.
-	if !h.skipPolicy {
+	d := rt.policy.Evaluate(policy.Input{Path: r.URL.Path, Subject: subject(sess), Now: h.now()})
+	if !d.Allow {
+		// The rule and reason go to the log only; the client sees a generic
+		// 403 page with the request ID.
+		h.logger.Info("access denied", "request_id", id, "host", host, "path", r.URL.Path,
+			"user", username(sess), "rule", d.Rule, "reason", d.Reason)
 		writePage(w, http.StatusForbidden, id)
 		return
 	}
-	rp.ServeHTTP(w, r)
+	h.logger.Debug("access allowed", "request_id", id, "host", host, "path", r.URL.Path,
+		"user", username(sess), "rule", d.Rule)
+	rt.proxy.ServeHTTP(w, r)
+}
+
+// subject is the policy view of a session; nil stays nil (and is denied).
+func subject(s *session.Session) *policy.Subject {
+	if s == nil {
+		return nil
+	}
+	return &policy.Subject{
+		Username: s.Username,
+		Email:    s.Email,
+		Groups:   s.Groups,
+		AMR:      s.AMR,
+		AuthTime: s.AuthTime,
+	}
+}
+
+func username(s *session.Session) string {
+	if s == nil {
+		return ""
+	}
+	return s.Username
 }
 
 func serveHealthz(w http.ResponseWriter, r *http.Request, id string) {
@@ -207,16 +281,4 @@ func (h *Handler) upstreamError(w http.ResponseWriter, r *http.Request, host str
 	}
 	h.logger.Log(r.Context(), level, "upstream error", "request_id", id, "host", host, "err", err)
 	writePage(w, http.StatusBadGateway, id)
-}
-
-func isLoopbackAddr(hostport string) bool {
-	host, _, err := net.SplitHostPort(hostport)
-	if err != nil {
-		return false
-	}
-	if host == "localhost" {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
 }

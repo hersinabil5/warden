@@ -49,13 +49,18 @@ func testConfig(t *testing.T, upstream string) *config.Config {
 		Listen:             "127.0.0.1:8443",
 		HTTPRedirectListen: "127.0.0.1:8080",
 		Auth:               config.Auth{Domain: "auth.example.test"},
-		Routes:             []config.Route{{Host: "app.example.test", UpstreamURL: u}},
+		Routes:             []config.Route{{Host: "app.example.test", UpstreamURL: u, Policy: anyUser}},
 	}
 }
 
-func newTestHandler(t *testing.T, cfg *config.Config, allowUnauth bool) *Handler {
+var anyUser = config.Policy{Allow: []config.Rule{{Authenticated: ptr(true)}}}
+
+func ptr[T any](v T) *T { return &v }
+
+// newTestHandler serves cfg with every request authenticated (allowAll).
+func newTestHandler(t *testing.T, cfg *config.Config) *Handler {
 	t.Helper()
-	h, err := New(cfg, Options{SkipPolicy: allowUnauth, Authenticator: allowAll{}, Logger: slog.New(slog.DiscardHandler)})
+	h, err := New(cfg, Options{Authenticator: allowAll{}, Logger: slog.New(slog.DiscardHandler)})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -82,7 +87,7 @@ func decodeSeen(t *testing.T, rec *httptest.ResponseRecorder) seenRequest {
 
 func TestRoutesByHost(t *testing.T) {
 	up := newEcho(t)
-	h := newTestHandler(t, testConfig(t, up.URL), true)
+	h := newTestHandler(t, testConfig(t, up.URL))
 
 	for _, host := range []string{"app.example.test", "APP.example.TEST", "app.example.test:8443"} {
 		t.Run(host, func(t *testing.T) {
@@ -98,7 +103,7 @@ func TestRoutesByHost(t *testing.T) {
 
 func TestUnroutableRequestsAreNotProxied(t *testing.T) {
 	up := newEcho(t)
-	h := newTestHandler(t, testConfig(t, up.URL), true)
+	h := newTestHandler(t, testConfig(t, up.URL))
 
 	tests := []struct {
 		name, host, path string
@@ -115,6 +120,8 @@ func TestUnroutableRequestsAreNotProxied(t *testing.T) {
 		{"reserved prefix", "app.example.test", "/.warden/anything", http.StatusNotFound},
 		{"reserved prefix bare", "app.example.test", "/.warden", http.StatusNotFound},
 		{"reserved prefix encoded dot", "app.example.test", "/%2Ewarden/anything", http.StatusNotFound},
+		{"reserved prefix via dot-dot", "app.example.test", "/x/../.warden/anything", http.StatusNotFound},
+		{"reserved prefix via double slash", "app.example.test", "//.warden/anything", http.StatusNotFound},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -142,8 +149,8 @@ func TestSNIMustMatchHost(t *testing.T) {
 	up := newEcho(t)
 	cfg := testConfig(t, up.URL)
 	u2, _ := url.Parse(up.URL)
-	cfg.Routes = append(cfg.Routes, config.Route{Host: "other.example.test", UpstreamURL: u2})
-	h := newTestHandler(t, cfg, true)
+	cfg.Routes = append(cfg.Routes, config.Route{Host: "other.example.test", UpstreamURL: u2, Policy: anyUser})
+	h := newTestHandler(t, cfg)
 
 	tests := []struct {
 		name, sni, host string
@@ -172,58 +179,18 @@ func TestSNIMustMatchHost(t *testing.T) {
 	}
 }
 
-// Without the dev flag there is no way to authenticate yet, so every proxied
-// request is denied (invariant 1).
-func TestDefaultDenyWithoutDevFlag(t *testing.T) {
-	up := newEcho(t)
-	h := newTestHandler(t, testConfig(t, up.URL), false)
-
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
-	req.Host = "app.example.test"
-	rec := serve(h, req)
-	if rec.Code != http.StatusForbidden {
-		t.Errorf("status = %d, want 403", rec.Code)
-	}
-	if up.hits.Load() != 0 {
-		t.Error("request reached the upstream")
-	}
-}
-
-func TestDevFlagRequiresLoopbackListeners(t *testing.T) {
-	tests := []struct {
-		name, listen, redirect string
-		wantErr                bool
-	}{
-		{"loopback v4", "127.0.0.1:8443", "127.0.0.1:8080", false},
-		{"localhost", "localhost:8443", "localhost:8080", false},
-		{"loopback v6", "[::1]:8443", "", false},
-		{"all interfaces", ":8443", "127.0.0.1:8080", true},
-		{"unspecified v4", "0.0.0.0:8443", "127.0.0.1:8080", true},
-		{"public address", "192.0.2.10:8443", "127.0.0.1:8080", true},
-		{"redirect on all interfaces", "127.0.0.1:8443", ":8080", true},
-		{"localhost lookalike", "localhost.evil.example:8443", "", true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := testConfig(t, "http://127.0.0.1:1")
-			cfg.Listen, cfg.HTTPRedirectListen = tt.listen, tt.redirect
-
-			_, err := New(cfg, Options{SkipPolicy: true, Authenticator: allowAll{}, Logger: slog.New(slog.DiscardHandler)})
-			if (err != nil) != tt.wantErr {
-				t.Errorf("err = %v, wantErr %v", err, tt.wantErr)
-			}
-			// Without the flag, any listener is fine.
-			if _, err := New(cfg, Options{Logger: slog.New(slog.DiscardHandler)}); err != nil {
-				t.Errorf("without dev flag: %v", err)
-			}
-		})
-	}
-}
-
 func TestNewRejectsRouteWithoutUpstream(t *testing.T) {
 	cfg := testConfig(t, "http://127.0.0.1:1")
 	cfg.Routes[0].UpstreamURL = nil
 	if _, err := New(cfg, Options{Logger: slog.New(slog.DiscardHandler)}); err == nil {
 		t.Error("New accepted a route with no parsed upstream")
+	}
+}
+
+func TestNewRejectsInvalidPolicy(t *testing.T) {
+	cfg := testConfig(t, "http://127.0.0.1:1")
+	cfg.Routes[0].Policy = config.Policy{}
+	if _, err := New(cfg, Options{Logger: slog.New(slog.DiscardHandler)}); err == nil {
+		t.Error("New accepted a route with no allow rules")
 	}
 }

@@ -17,7 +17,7 @@ import (
 func proxyThrough(t *testing.T, req *http.Request) (seenRequest, *httptest.ResponseRecorder) {
 	t.Helper()
 	up := newEcho(t)
-	h := newTestHandler(t, testConfig(t, up.URL), true)
+	h := newTestHandler(t, testConfig(t, up.URL))
 	rec := serve(h, req)
 	return decodeSeen(t, rec), rec
 }
@@ -96,7 +96,7 @@ func TestHopByHopResponseHeadersStripped(t *testing.T) {
 		w.Header().Set("X-Normal", "kept")
 	}))
 	defer up.Close()
-	h := newTestHandler(t, testConfig(t, up.URL), true)
+	h := newTestHandler(t, testConfig(t, up.URL))
 
 	rec := serve(h, appRequest(t))
 	for _, name := range []string{"X-Upstream-Hop", "Keep-Alive"} {
@@ -119,7 +119,7 @@ func TestRequestIDIsWardens(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(seenRequest{Header: r.Header})
 	}))
 	defer up.Close()
-	h := newTestHandler(t, testConfig(t, up.URL), true)
+	h := newTestHandler(t, testConfig(t, up.URL))
 
 	req := appRequest(t)
 	req.Header.Set(RequestIDHeader, "attacker-chosen-id")
@@ -137,7 +137,7 @@ func TestRequestIDIsWardens(t *testing.T) {
 
 func TestRequestIDsAreUnique(t *testing.T) {
 	up := newEcho(t)
-	h := newTestHandler(t, testConfig(t, up.URL), true)
+	h := newTestHandler(t, testConfig(t, up.URL))
 	seen := make(map[string]bool)
 	for range 200 {
 		req := appRequest(t)
@@ -156,8 +156,8 @@ func TestRequestLogLine(t *testing.T) {
 	up := newEcho(t)
 	var buf bytes.Buffer
 	h, err := New(testConfig(t, up.URL), Options{
-		SkipPolicy: true, Authenticator: allowAll{},
-		Logger: slog.New(slog.NewJSONHandler(&buf, nil)),
+		Authenticator: allowAll{},
+		Logger:        slog.New(slog.NewJSONHandler(&buf, nil)),
 	})
 	if err != nil {
 		t.Fatal(err)

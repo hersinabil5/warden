@@ -224,6 +224,7 @@ func TestRunRejectsBadInvocation(t *testing.T) {
 		{"nonexistent config", []string{"-config", missing}, missing},
 		{"config is a directory", []string{"-config", t.TempDir()}, "config"},
 		{"unknown flag", []string{"-config", writeConfig(t), "-bogus"}, "bogus"},
+		{"removed dev flag", []string{"-config", writeConfig(t), "-dev-skip-policy"}, "dev-skip-policy"},
 		{"invalid log level", []string{"-config", writeConfig(t), "-log-level", "loud"}, "log-level"},
 		{"positional args", []string{"-config", writeConfig(t), "extra"}, "unexpected argument"},
 		{"invalid YAML", []string{"-config", writeConfigContent(t, "listen: [\n")}, "parsing YAML"},
@@ -596,7 +597,7 @@ func TestRunServesHTTPSAndRedirects(t *testing.T) {
 	}))
 	defer upstream.Close()
 	env := newTestEnv(t, strings.Replace(minimalConfig, "http://127.0.0.1:9001", upstream.URL, 1))
-	startRun(t, "-config", env.path, "-dev-skip-policy")
+	startRun(t, "-config", env.path)
 
 	https := clientFor(env.httpsAddr, env.pool)
 	_, httpsPort, _ := net.SplitHostPort(env.httpsAddr)
@@ -693,7 +694,7 @@ func TestRunLoginEndToEnd(t *testing.T) {
 	idp := testidp.New(t)
 	idp.SetClientSecret(testSecret)
 	env := newTestEnvWithIdP(t, strings.Replace(minimalConfig, "http://127.0.0.1:9001", upstream.URL, 1), idp)
-	startRun(t, "-config", env.path, "-dev-skip-policy")
+	startRun(t, "-config", env.path)
 	_, port := splitPort(t, env.httpsAddr)
 
 	b := browserFor(t, env)
@@ -769,16 +770,17 @@ func splitPort(t *testing.T, addr string) (string, string) {
 	return h, p
 }
 
-// Without the dev flag there is no policy engine yet (M3), so even a
-// signed-in user is denied: default deny (invariant 1).
-func TestRunDeniesByDefault(t *testing.T) {
+// A signed-in user that no rule allows gets 403 after login (invariant 1).
+func TestRunDeniesByPolicy(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, "upstream")
 	}))
 	defer upstream.Close()
 	idp := testidp.New(t)
 	idp.SetClientSecret(testSecret)
-	env := newTestEnvWithIdP(t, strings.Replace(minimalConfig, "http://127.0.0.1:9001", upstream.URL, 1), idp)
+	cfg := strings.Replace(minimalConfig, "http://127.0.0.1:9001", upstream.URL, 1)
+	cfg = strings.Replace(cfg, "        - authenticated: true", "        - groups: [nobody-has-this]", 1)
+	env := newTestEnvWithIdP(t, cfg, idp)
 	startRun(t, "-config", env.path)
 	_, port := splitPort(t, env.httpsAddr)
 
@@ -791,8 +793,6 @@ func TestRunDeniesByDefault(t *testing.T) {
 
 func TestRunStartupFailures(t *testing.T) {
 	missingCert := newTestEnv(t, strings.Replace(minimalConfig, "cert_file: cert.pem", "cert_file: /nonexistent/cert.pem", 1))
-	// The loopback check runs before anything is bound, so 0.0.0.0 is never opened.
-	publicListen := newTestEnv(t, strings.Replace(minimalConfig, `listen: ":8443"`, `listen: "0.0.0.0:8443"`, 1)).path
 
 	tests := []struct {
 		name    string
@@ -800,7 +800,6 @@ func TestRunStartupFailures(t *testing.T) {
 		wantErr string
 	}{
 		{"missing certificate", []string{"-config", missingCert.path}, "loading TLS certificate"},
-		{"dev flag on public listener", []string{"-config", publicListen, "-dev-skip-policy"}, "loopback"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

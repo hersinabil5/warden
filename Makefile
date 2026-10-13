@@ -29,7 +29,7 @@ run:
 	@test -f $(DEV_CONFIG) || { \
 		echo "missing $(DEV_CONFIG); create it with: cp config/warden.example.yaml $(DEV_CONFIG)" >&2; \
 		exit 1; }
-	go run ./cmd/warden -config $(DEV_CONFIG) -dev-skip-policy
+	go run ./cmd/warden -config $(DEV_CONFIG)
 
 build:
 	go build -o bin/warden ./cmd/warden
@@ -42,7 +42,11 @@ lint:
 	golangci-lint run
 	govulncheck ./...
 
+# Go minimizes every new interesting input for up to 60s by default; on
+# multi-KB paths that stalls a short run, so cap it.
+FUZZ := -run=^$$ -fuzztime=30s -fuzzminimizetime=2s
+
 fuzz:
-	go test ./internal/pathnorm -run=^$$ -fuzz=Fuzz -fuzztime=30s
-	go test ./internal/policy -run=^$$ -fuzz=Fuzz -fuzztime=30s
-	go test ./internal/authn -run=^$$ -fuzz=FuzzReturnURL -fuzztime=30s
+	go test ./internal/pathnorm $(FUZZ) -fuzz=FuzzNormalize
+	go test ./internal/policy $(FUZZ) -fuzz=FuzzEvaluate
+	go test ./internal/authn $(FUZZ) -fuzz=FuzzReturnURL

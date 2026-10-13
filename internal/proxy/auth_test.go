@@ -23,7 +23,7 @@ func (f *fakeAuth) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func TestAuthHandlerOnlyOnAuthHost(t *testing.T) {
 	echo := newEcho(t)
 	auth := &fakeAuth{}
-	h, err := New(testConfig(t, echo.URL), Options{Auth: auth, SkipPolicy: true, Authenticator: allowAll{}, Logger: slog.New(slog.DiscardHandler)})
+	h, err := New(testConfig(t, echo.URL), Options{Auth: auth, Authenticator: allowAll{}, Logger: slog.New(slog.DiscardHandler)})
 	if err != nil {
 		t.Fatal(err)
 	}

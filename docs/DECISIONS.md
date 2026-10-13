@@ -282,7 +282,7 @@ that login exists, D6's "proxy without authentication" flag is no longer needed.
 - **Dev flag.** `-dev-allow-unauthenticated` is replaced by `-dev-skip-policy`. Authentication is
   always enforced. The flag only lets any signed-in user through until the policy engine exists
   (M3), keeps D6's loopback-only restriction, and is removed in M3. Without it, signed-in users get
-  403 (default deny).
+  403 (default deny). (Removed in M3 as planned; see D15.)
 
 **Consequences:** Every app needs one extra redirect per session (D1). The binding cookie is shared
 by the tabs of one browser on a host, so parallel logins work. An app that relies on reading a
@@ -308,3 +308,47 @@ because Chrome applies it to the redirect after the form POST.
 **Consequences:** Without `logout_at_idp`, the IdP session survives, and the next login is silent
 SSO. App-host cookies stay in the browser but are dead; the next request clears them and starts a
 new login.
+
+## D15: Policy semantics and path normalization
+
+**Context:** Policy is only as good as the path it's evaluated on. Upstreams decode and clean paths
+in different ways (`%2F` as `/`, `\` as `/`, `;params` stripped, case folded), so any gap between
+what Warden checks and what the upstream serves is a bypass (invariant 6). The rule language also
+needs exact meanings for prefixes, multiple rules, and MFA.
+
+**Decision:**
+- **One normalization, up front.** Warden normalizes the raw request target (`RequestURI`, so
+  `%2F` is still visible; absolute-form is accepted per RFC 9112) before routing, before
+  `/.warden/` dispatch, and before authentication. `pathnorm.Normalize` decodes once, resolves `.`
+  and `..` (never above the root), collapses `//`, and keeps a trailing slash. Everything
+  downstream (Warden's endpoints, policy, the upstream) sees only the result, and the upstream gets
+  it re-encoded. The query string is passed through untouched.
+- **Rejected with 400, never guessed:** encoded `/` or `\`, raw `\`, NUL and control characters,
+  invalid or overlong UTF-8, bad percent-encoding, anything still percent-encoded after one decode
+  (double encoding), and `;` anywhere in the path. `;` is legal in URLs, but Tomcat, Jetty and
+  others strip `;...` from segments (`/admin;x`, `/..;/admin`), which is a known bypass; refusing it
+  costs little. Paths over 4 KiB are refused.
+- **Rules.** Rules in one `allow` list are ORed; the conditions inside a rule are ANDed. `users`
+  matches the username (`preferred_username`, falling back to `sub`) exactly; `groups` matches any
+  listed group exactly; `email_domains` matches the domain of a *verified* email exactly (no
+  subdomains). `authenticated: true` matches any session.
+- **Paths.** The route's `allow` applies unless a `paths` prefix contains the request path, in
+  which case that prefix's rules apply *instead* (the longest prefix wins; rules don't stack).
+  Prefixes match whole segments: `/admin` covers `/admin`, `/admin/` and `/admin/x`, not
+  `/administrator`. A trailing slash on a prefix is dropped, so `/admin/` also protects `/admin`.
+  Matching is case-sensitive unless the route sets `case_insensitive_paths: true` (for upstreams
+  that fold case); that uses Unicode case folding, so `/\u212Aube` matches a `/kube` prefix.
+- **MFA.** `require_mfa_within: D` holds when the ID token's `amr` shows more than one factor (the
+  value `mfa`, or two distinct RFC 8176 methods, e.g. Keycloak's `["pwd","otp"]`) and `auth_time`
+  is no older than `D` (and not more than a minute in the future). A single strong method such as
+  `hwk` alone doesn't count. Until step-up (M7), a stale or missing MFA is a plain 403.
+- **Failing closed.** `Evaluate` is pure and denies on anything unexpected: no policy, no session,
+  no time, or a path that isn't normalized. `policy.Compile` repeats the config checks, so a
+  policy built another way can't smuggle in an empty rule.
+- **Denials.** 403 with the generic page and request ID. The rule and reason go to the log only.
+- `-dev-skip-policy` is gone. `make run` now enforces the configured policy.
+
+**Consequences:** Apps that need `;` or encoded slashes in paths can't sit behind Warden as-is. A
+path rule replaces the route rule, so a prefix meant to be *looser* (for example `/public`) is
+looser only for that subtree. Case-insensitive matching is opt-in per route, because folding
+everything would let `/Admin` rules capture unrelated paths on case-sensitive apps.

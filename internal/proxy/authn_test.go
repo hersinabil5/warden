@@ -30,7 +30,7 @@ func (d *denyAll) Authenticate(w http.ResponseWriter, _ *http.Request, host stri
 func TestUnauthenticatedRequestsNeverReachUpstream(t *testing.T) {
 	up := newEcho(t)
 	deny := &denyAll{}
-	h, err := New(testConfig(t, up.URL), Options{SkipPolicy: true, Authenticator: deny, Logger: slog.New(slog.DiscardHandler)})
+	h, err := New(testConfig(t, up.URL), Options{Authenticator: deny, Logger: slog.New(slog.DiscardHandler)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestUnauthenticatedRequestsNeverReachUpstream(t *testing.T) {
 
 func TestNilAuthenticatorFailsClosed(t *testing.T) {
 	up := newEcho(t)
-	h, err := New(testConfig(t, up.URL), Options{SkipPolicy: true, Logger: slog.New(slog.DiscardHandler)})
+	h, err := New(testConfig(t, up.URL), Options{Logger: slog.New(slog.DiscardHandler)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,23 +63,10 @@ func TestNilAuthenticatorFailsClosed(t *testing.T) {
 	}
 }
 
-func TestAuthenticatedWithoutDevFlagIsDenied(t *testing.T) {
-	up := newEcho(t)
-	h, err := New(testConfig(t, up.URL), Options{Authenticator: allowAll{}, Logger: slog.New(slog.DiscardHandler)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
-	req.Host = "app.example.test"
-	if rec := serve(h, req); rec.Code != http.StatusForbidden || up.hits.Load() != 0 {
-		t.Errorf("status = %d; want 403 until policy exists (invariant 1)", rec.Code)
-	}
-}
-
 func TestWardenCookiesNotForwarded(t *testing.T) {
 	up := newEcho(t)
 	h, err := New(testConfig(t, up.URL), Options{
-		SkipPolicy: true, Authenticator: allowAll{}, Logger: slog.New(slog.DiscardHandler),
+		Authenticator: allowAll{}, Logger: slog.New(slog.DiscardHandler),
 		CookieNames: []string{"_warden", "__Host-warden_*"},
 	})
 	if err != nil {
@@ -116,7 +103,7 @@ func TestUpstreamCannotSetWardenCookies(t *testing.T) {
 	}))
 	defer up.Close()
 	h, err := New(testConfig(t, up.URL), Options{
-		SkipPolicy: true, Authenticator: allowAll{}, Logger: slog.New(slog.DiscardHandler),
+		Authenticator: allowAll{}, Logger: slog.New(slog.DiscardHandler),
 		CookieNames: []string{"_warden", "__Host-warden_*"},
 	})
 	if err != nil {

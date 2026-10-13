@@ -25,7 +25,7 @@ var fastTimeouts = TransportTimeouts{
 func newFastHandler(t *testing.T, cfg *config.Config, logs *bytes.Buffer) *Handler {
 	t.Helper()
 	h, err := New(cfg, Options{
-		SkipPolicy: true, Authenticator: allowAll{},
+		Authenticator:     allowAll{},
 		Logger:            slog.New(slog.NewJSONHandler(logs, nil)),
 		TransportTimeouts: fastTimeouts,
 	})
