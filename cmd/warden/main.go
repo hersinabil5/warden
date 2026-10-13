@@ -21,10 +21,14 @@ import (
 	"github.com/hersinabil5/warden/internal/authn"
 	"github.com/hersinabil5/warden/internal/config"
 	"github.com/hersinabil5/warden/internal/proxy"
+	"github.com/hersinabil5/warden/internal/session"
 )
 
 // shutdownTimeout bounds how long graceful shutdown may take before giving up.
 const shutdownTimeout = 15 * time.Second
+
+// redisPingTimeout bounds the startup connectivity check.
+const redisPingTimeout = 5 * time.Second
 
 // shutdownFunc releases one resource during graceful shutdown (for example
 // http.Server.Shutdown). It should return promptly once ctx is done.
@@ -103,6 +107,20 @@ func run(ctx context.Context, args []string, logOut io.Writer, getenv func(strin
 		}
 		return err
 	}
+	// Sessions live in Redis (D2); refuse to start without it.
+	rdb := session.NewClient(cfg.Session.RedisAddr)
+	defer func() { _ = rdb.Close() }()
+	sessions := session.NewStore(rdb, session.Options{
+		AbsoluteTTL: cfg.Session.AbsoluteTTL,
+		IdleTimeout: cfg.Session.IdleTimeout,
+	})
+	pingCtx, cancelPing := context.WithTimeout(ctx, redisPingTimeout)
+	err = sessions.Ping(pingCtx)
+	cancelPing()
+	if err != nil {
+		return fmt.Errorf("connecting to Redis at %s: %w", cfg.Session.RedisAddr, err)
+	}
+
 	// Per-process key for pre-auth cookies; a restart only cancels logins in
 	// progress (docs/DECISIONS.md D9).
 	cookieKey, err := authn.NewCookieKey()

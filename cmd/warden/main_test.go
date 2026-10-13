@@ -29,6 +29,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
+
 	"github.com/hersinabil5/warden/internal/authn/testidp"
 )
 
@@ -114,6 +116,7 @@ func newTestEnvWithIdP(t *testing.T, content string, idp *testidp.IdP) testEnv {
 		"cert_file: cert.pem", "cert_file: "+certPath,
 		"key_file: key.pem", "key_file: "+keyPath,
 		"issuer: https://idp.example.test/realms/warden", "issuer: "+idp.Issuer,
+		`redis_addr: "localhost:6379"`, `redis_addr: "`+miniredis.RunT(t).Addr()+`"`,
 	).Replace(content)
 	env.path = writeConfigContent(t, content)
 	return env
@@ -704,6 +707,18 @@ func TestRunFailsFastOnBadIdP(t *testing.T) {
 	}
 	if hasMsg(logLines(t, out.String()), "warden starting") {
 		t.Error("logged startup despite failed discovery")
+	}
+}
+
+func TestRunFailsFastWithoutRedis(t *testing.T) {
+	env := newTestEnv(t, strings.Replace(minimalConfig, `redis_addr: "localhost:6379"`, `redis_addr: "`+freeAddr(t)+`"`, 1))
+	var out syncBuffer
+	err := run(t.Context(), []string{"-config", env.path}, &out, testGetenv, nil)
+	if err == nil || !strings.Contains(err.Error(), "Redis") {
+		t.Fatalf("err = %v, want Redis connection error", err)
+	}
+	if hasMsg(logLines(t, out.String()), "warden starting") {
+		t.Error("started without Redis")
 	}
 }
 

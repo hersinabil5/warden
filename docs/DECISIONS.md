@@ -175,3 +175,31 @@ for a signed cookie. The verifier and nonce shouldn't be readable by anything th
 **Consequences:** A restart cancels logins in progress (users click login again). Multiple Warden
 instances (M8) would need a shared, rotatable key, which becomes a config secret then. Login
 doesn't accept a return URL yet; that arrives with return-URL validation (invariant 5).
+
+## D10: Session store layout and revocation semantics
+
+**Context:** D1 gives each app host its own cookie, and D2 keeps sessions in Redis under a hash
+of the ID. Revocation must take effect on the next request (invariant 8), including for every app
+host the user visited.
+
+**Decision:**
+- **Keys:** `warden:s:<sha256(id)>`. The raw ID exists only in the cookie. One-time values
+  (handshake codes) and used-`state` markers are also stored under hashes of their tokens.
+- **Main vs. app sessions:** a main session (auth host) holds the identity. An app session (one per
+  app host) holds only a pointer to its main session and the host it was issued for. Looking up an
+  app session resolves the main session every time, so deleting the main session revokes every app
+  session at once, with no fan-out needed. A children index exists only for cleanup. App activity
+  refreshes the main session's idle timer.
+- **Timeouts:** absolute TTL and idle timeout are checked from the record's own timestamps on every
+  read, not just through Redis expiry. The Redis TTL is `min(idle, absolute remaining)`.
+- **Touches** use `SET XX`, so a touch racing a revocation cannot recreate the session. One-time
+  codes are redeemed with `GETDEL`, and `state` is marked used with `SET NX`.
+- **Failures:** a Redis error is distinct from "not found", and callers deny on both. Warden pings
+  Redis at startup and refuses to start without it. Client timeouts: 2s dial, 1s read/write, 2s
+  pool wait.
+- **Refresh token:** stored in the session record (needed for M5 group refresh). `Session` redacts
+  it from every fmt verb and from slog.
+
+**Consequences:** Every authenticated request costs a Redis read and write for the main session
+(plus a read for the app pointer). Anyone who can read Redis gets refresh tokens but no usable
+cookies. Encrypting refresh tokens at rest is a possible later hardening.
