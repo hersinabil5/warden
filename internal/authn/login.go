@@ -44,6 +44,8 @@ type Handler struct {
 	cookieName  string
 	groupsClaim string
 	returns     *returnURLs
+	authDomain  string
+	port        string
 	sealer      *cookieSealer
 	logger      *slog.Logger
 	errorPage   func(http.ResponseWriter, *http.Request, int)
@@ -99,6 +101,8 @@ func NewHandler(cfg *config.Config, p *Provider, opts HandlerOptions) (*Handler,
 		cookieName:  cfg.Session.CookieName,
 		groupsClaim: cfg.Auth.GroupsClaim,
 		returns:     newReturnURLs(hosts, port),
+		authDomain:  cfg.Auth.Domain,
+		port:        port,
 		sealer:      sealer,
 		logger:      opts.Logger,
 		errorPage:   opts.ErrorPage,
@@ -125,15 +129,20 @@ func origin(host, port string) string {
 	return "https://" + net.JoinHostPort(host, port)
 }
 
+// ServeHTTP serves Warden's endpoints. Which exist depends on the host: the
+// OIDC endpoints only on the auth host, the handshake only on route hosts.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	host := requestHost(r)
 	var serve http.HandlerFunc
-	switch r.URL.Path {
-	case LoginPath:
+	switch {
+	case host == h.authDomain && r.URL.Path == LoginPath:
 		serve = h.login
-	case CallbackPath:
+	case host == h.authDomain && r.URL.Path == CallbackPath:
 		serve = h.callback
-	case SessionPath:
+	case host == h.authDomain && r.URL.Path == SessionPath:
 		serve = h.sessionPage
+	case h.returns.hosts[host] && r.URL.Path == HandshakePath:
+		serve = func(w http.ResponseWriter, r *http.Request) { h.redeemHandshake(w, r, host) }
 	default:
 		h.errorPage(w, r, http.StatusNotFound)
 		return
@@ -154,12 +163,28 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	binding, ok := h.binding(w, r, returnTo)
+	if !ok {
+		return
+	}
+	// Already signed in on the auth host: no IdP round trip (single sign-on).
+	if c, err := r.Cookie(h.cookieName); err == nil && c.Value != "" {
+		_, gerr := h.sessions.Get(r.Context(), c.Value)
+		switch {
+		case gerr == nil:
+			h.continueTo(w, r, c.Value, returnTo, binding)
+			return
+		case !errors.Is(gerr, session.ErrNotFound):
+			h.fail(w, r, "loading session", gerr)
+			return
+		}
+	}
 	pa, err := newPreAuth(h.now())
 	if err != nil {
 		h.fail(w, r, "generating login state", err)
 		return
 	}
-	pa.ReturnTo = returnTo
+	pa.ReturnTo, pa.Binding = returnTo, binding
 	name := preAuthCookieName(pa.State)
 	value, err := h.sealer.seal(name, pa)
 	if err != nil {
@@ -197,6 +222,21 @@ func (h *Handler) returnTo(w http.ResponseWriter, r *http.Request) (string, bool
 		}
 	}
 	h.logger.Warn("rejected return URL", "request_id", requestID(w), "count", len(rds))
+	h.errorPage(w, r, http.StatusBadRequest)
+	return "", false
+}
+
+// binding reads the optional hs parameter: the hash of the app host's
+// handshake cookie. It is only meaningful with a return URL.
+func (h *Handler) binding(w http.ResponseWriter, r *http.Request, returnTo string) (string, bool) {
+	hss := r.URL.Query()["hs"]
+	switch {
+	case len(hss) == 0:
+		return "", true
+	case len(hss) == 1 && returnTo != "" && validToken(hss[0]):
+		return hss[0], true
+	}
+	h.logger.Warn("rejected handshake binding", "request_id", requestID(w))
 	h.errorPage(w, r, http.StatusBadRequest)
 	return "", false
 }

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/hersinabil5/warden/internal/config"
+	"github.com/hersinabil5/warden/internal/session"
 )
 
 // reservedPrefix is Warden's own path namespace on every host. Requests under
@@ -23,16 +24,30 @@ const reservedPrefix = "/.warden"
 // authentication. It reports only that the process is serving.
 const HealthzPath = reservedPrefix + "/healthz"
 
+// Authenticator decides whether a request to a route host carries a valid
+// session. When it returns false it has already written the response (a
+// login redirect, 401, or error page) and the request must not be proxied.
+type Authenticator interface {
+	Authenticate(w http.ResponseWriter, r *http.Request, host string) (*session.Session, bool)
+}
+
 // Options configures a Handler.
 type Options struct {
-	// AllowUnauthenticated proxies requests without authentication. It exists
-	// only until login and policy land (M2/M3), requires loopback-only
-	// listeners, and is off by default (docs/DECISIONS.md D6).
-	AllowUnauthenticated bool
-	Logger               *slog.Logger
-	// Auth serves Warden's endpoints under /.warden/ on the auth host (login,
-	// callback). Nil leaves them 404.
+	// SkipPolicy proxies any authenticated request without evaluating route
+	// policy. It exists only until the policy engine lands (M3), requires
+	// loopback-only listeners, and is off by default (docs/DECISIONS.md D13).
+	// Authentication is always required.
+	SkipPolicy bool
+	Logger     *slog.Logger
+	// Auth serves Warden's endpoints under /.warden/ on the auth host and on
+	// route hosts (the handshake). Nil leaves them 404.
 	Auth http.Handler
+	// Authenticator checks sessions on route hosts. Nil denies every
+	// proxied request (fail closed).
+	Authenticator Authenticator
+	// CookieNames are Warden's own cookies: never forwarded to upstreams,
+	// and upstreams may not set them. Names ending in "*" match a prefix.
+	CookieNames []string
 	// Transport timeouts for upstream connections; zero means
 	// DefaultTransportTimeouts.
 	TransportTimeouts TransportTimeouts
@@ -40,30 +55,33 @@ type Options struct {
 
 // Handler routes requests by Host to upstream reverse proxies.
 type Handler struct {
-	routes      map[string]*httputil.ReverseProxy
-	authDomain  string
-	auth        http.Handler
-	allowUnauth bool
-	logger      *slog.Logger
+	routes     map[string]*httputil.ReverseProxy
+	authDomain string
+	auth       http.Handler
+	authn      Authenticator
+	skipPolicy bool
+	logger     *slog.Logger
 }
 
 // New builds a Handler from a validated config.
 func New(cfg *config.Config, opts Options) (*Handler, error) {
-	if opts.AllowUnauthenticated {
+	if opts.SkipPolicy {
 		for _, addr := range []string{cfg.Listen, cfg.HTTPRedirectListen} {
 			if addr != "" && !isLoopbackAddr(addr) {
-				return nil, fmt.Errorf("unauthenticated dev mode requires loopback listeners; %q is not", addr)
+				return nil, fmt.Errorf("dev mode without policy requires loopback listeners; %q is not", addr)
 			}
 		}
 	}
 
 	h := &Handler{
-		routes:      make(map[string]*httputil.ReverseProxy, len(cfg.Routes)),
-		authDomain:  cfg.Auth.Domain,
-		auth:        opts.Auth,
-		allowUnauth: opts.AllowUnauthenticated,
-		logger:      opts.Logger,
+		routes:     make(map[string]*httputil.ReverseProxy, len(cfg.Routes)),
+		authDomain: cfg.Auth.Domain,
+		auth:       opts.Auth,
+		authn:      opts.Authenticator,
+		skipPolicy: opts.SkipPolicy,
+		logger:     opts.Logger,
 	}
+	cookies := newCookieMatcher(opts.CookieNames)
 	tt := opts.TransportTimeouts
 	if tt == (TransportTimeouts{}) {
 		tt = DefaultTransportTimeouts
@@ -81,11 +99,13 @@ func New(cfg *config.Config, opts Options) (*Handler, error) {
 			Rewrite: func(pr *httputil.ProxyRequest) {
 				pr.SetURL(target)
 				rewriteHeaders(pr)
+				stripCookies(pr.Out.Header, cookies)
 			},
 			ModifyResponse: func(res *http.Response) error {
 				// ServeHTTP already set Warden's ID on the response; drop any
 				// value the upstream sent so the client sees exactly one.
 				res.Header.Del(RequestIDHeader)
+				stripSetCookies(res.Header, cookies)
 				return nil
 			},
 			ErrorHandler: func(w http.ResponseWriter, req *http.Request, err error) {
@@ -132,24 +152,32 @@ func (h *Handler) route(w http.ResponseWriter, r *http.Request, host, id string)
 		serveHealthz(w, r, id)
 		return
 	}
+	rp, isRoute := h.routes[host]
 	if r.URL.Path == reservedPrefix || strings.HasPrefix(r.URL.Path, reservedPrefix+"/") {
-		if host == h.authDomain && h.auth != nil {
+		// Warden's own endpoints, on hosts Warden serves. The auth handler
+		// decides which endpoint exists on which host.
+		if (host == h.authDomain || isRoute) && h.auth != nil {
 			h.auth.ServeHTTP(w, r)
 			return
 		}
 		writePage(w, http.StatusNotFound, id)
 		return
 	}
-
-	rp, ok := h.routes[host]
-	if !ok {
+	if !isRoute {
 		writePage(w, http.StatusNotFound, id)
 		return
 	}
 
-	// Default deny: until authentication exists, nothing is allowed unless
-	// the dev flag says otherwise.
-	if !h.allowUnauth {
+	if h.authn == nil {
+		writePage(w, http.StatusForbidden, id)
+		return
+	}
+	if _, ok := h.authn.Authenticate(w, r, host); !ok {
+		return
+	}
+	// Default deny (invariant 1): no policy engine yet (M3), so an
+	// authenticated request is proxied only in loopback dev mode.
+	if !h.skipPolicy {
 		writePage(w, http.StatusForbidden, id)
 		return
 	}

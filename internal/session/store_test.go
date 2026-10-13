@@ -386,3 +386,27 @@ func TestNewClientHasTimeouts(t *testing.T) {
 		t.Errorf("missing timeouts: dial %v read %v write %v pool %v", o.DialTimeout, o.ReadTimeout, o.WriteTimeout, o.PoolTimeout)
 	}
 }
+
+func TestDeleteAppOnlyDeletesAppSessions(t *testing.T) {
+	s, _, _ := newTestStore(t)
+	mainID, _ := s.Create(t.Context(), testSession())
+	appID, err := s.CreateApp(t.Context(), HashID(mainID), "whoami.example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteApp(t.Context(), mainID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Get(t.Context(), mainID); err != nil {
+		t.Errorf("DeleteApp removed a main session: %v", err)
+	}
+	if err := s.DeleteApp(t.Context(), appID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetApp(t.Context(), appID, "whoami.example.test"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("app session survived DeleteApp: %v", err)
+	}
+	if err := s.DeleteApp(t.Context(), "unknown"); err != nil {
+		t.Errorf("unknown ID: %v", err)
+	}
+}

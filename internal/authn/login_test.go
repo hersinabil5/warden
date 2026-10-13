@@ -184,9 +184,18 @@ func TestLoginIgnoresSmuggledParameters(t *testing.T) {
 	}
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet,
 		"https://"+testAuthDomain+LoginPath+"?"+smuggled.Encode(), nil)
-	req.Host = "evil.com" // a spoofed Host must not reach redirect_uri either
 	rec := httptest.NewRecorder()
 	e.h.ServeHTTP(rec, req)
+
+	// A spoofed Host never reaches login at all, so it cannot shape the
+	// redirect_uri either.
+	spoofed := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://"+testAuthDomain+LoginPath, nil)
+	spoofed.Host = "evil.com"
+	srec := httptest.NewRecorder()
+	e.h.ServeHTTP(srec, spoofed)
+	if srec.Code != http.StatusNotFound || srec.Header().Get("Location") != "" {
+		t.Errorf("spoofed Host: status %d, Location %q; want 404", srec.Code, srec.Header().Get("Location"))
+	}
 	loc, err := url.Parse(rec.Header().Get("Location"))
 	if err != nil {
 		t.Fatal(err)

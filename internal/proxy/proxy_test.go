@@ -55,7 +55,7 @@ func testConfig(t *testing.T, upstream string) *config.Config {
 
 func newTestHandler(t *testing.T, cfg *config.Config, allowUnauth bool) *Handler {
 	t.Helper()
-	h, err := New(cfg, Options{AllowUnauthenticated: allowUnauth, Logger: slog.New(slog.DiscardHandler)})
+	h, err := New(cfg, Options{SkipPolicy: allowUnauth, Authenticator: allowAll{}, Logger: slog.New(slog.DiscardHandler)})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestDevFlagRequiresLoopbackListeners(t *testing.T) {
 			cfg := testConfig(t, "http://127.0.0.1:1")
 			cfg.Listen, cfg.HTTPRedirectListen = tt.listen, tt.redirect
 
-			_, err := New(cfg, Options{AllowUnauthenticated: true, Logger: slog.New(slog.DiscardHandler)})
+			_, err := New(cfg, Options{SkipPolicy: true, Authenticator: allowAll{}, Logger: slog.New(slog.DiscardHandler)})
 			if (err != nil) != tt.wantErr {
 				t.Errorf("err = %v, wantErr %v", err, tt.wantErr)
 			}

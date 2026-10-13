@@ -20,7 +20,7 @@ Update this whenever a change adds, removes, or weakens a mitigation.
 
 | # | Threat | Mitigation | Milestone | Status |
 |---|--------|-----------|-----------|--------|
-| T1 | Unauthenticated access to internal apps | Default-deny routing (unknown host 404, routed host 403 until login exists); login required. Temporary loopback-only dev bypass (D6) | M1–M3 | partial |
+| T1 | Unauthenticated access to internal apps | Every route request needs a valid app session (login redirect for GET/HEAD, 401 otherwise); authenticated requests still denied until policy exists (M3), except in loopback-only `-dev-skip-policy` mode (D13) | M1–M3 | partial |
 | T2 | Login CSRF / session fixation | Random 256-bit `state`/`nonce` + PKCE S256 in a sealed, host-only, per-login cookie (D9); callback requires the cookie for that state, single-use state in Redis before code exchange, and a fresh session ID with any prior session revoked (D12) | M2 | done |
 | T3 | Token forgery or substitution | Signature via JWKS with pinned asymmetric algs (no `none`/`HS*`, D8); `iss`, `aud`, `exp`; `nonce` bound to the pre-auth cookie; `iat` within the login window; `azp`; `sub` required; groups claim type-checked; unverified email dropped (D12) | M2 | done |
 | T4 | Open redirect via return URL | Return URL must be a literal `https://` URL on a configured route host and Warden's public port; `\\`, whitespace, control chars, userinfo and other schemes rejected; redirect goes to a canonical URL rebuilt from the parsed parts; fuzzed (D11) | M2 | done |
@@ -46,6 +46,8 @@ Update this whenever a change adds, removes, or weakens a mitigation.
 | T24 | Algorithm downgrade / confusion (`alg: none`, HS256 keyed with the RSA public key) | `auth.id_token_algs` allows asymmetric algs only; verifier pinned to their intersection with the IdP's list (D8) | M2 | done |
 | T25 | Startup hang or traffic redirection on IdP calls | Bounded retry budget; IdP client timeouts, 1 MiB body cap, no proxy env, no redirects (D8) | M2 | done |
 | T26 | Authorize-request tampering via login parameters or Host header (redirect_uri, client_id, scope, response_type, PKCE method) | Authorize URL built only from config and discovery; request query and Host ignored (D9) | M2 | done |
+| T27 | Login CSRF / session swap on app hosts via a forwarded handshake code | Code bound to an app-host `__Host-` cookie (only its hash travels), redeemable once within 30s on the issuing host only; no code issued without a binding (D13) | M2 | done |
+| T28 | Upstream stealing or planting Warden cookies | Warden cookies stripped from requests to upstreams; upstream `Set-Cookie` for Warden names dropped (D13) | M2 | done |
 
 ## Out of scope (explicitly not defended)
 

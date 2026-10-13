@@ -65,8 +65,8 @@ func run(ctx context.Context, args []string, logOut io.Writer, getenv func(strin
 	fs.SetOutput(logOut)
 	configPath := fs.String("config", "", "path to the YAML config file (required)")
 	logLevel := fs.String("log-level", "info", "log level: debug, info, warn, error")
-	devUnauth := fs.Bool("dev-allow-unauthenticated", false,
-		"DEV ONLY (removed in M3): proxy requests without authentication; requires loopback listeners")
+	devSkipPolicy := fs.Bool("dev-skip-policy", false,
+		"DEV ONLY (removed in M3): proxy any authenticated request without policy checks; requires loopback listeners")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -137,12 +137,18 @@ func run(ctx context.Context, args []string, logOut io.Writer, getenv func(strin
 		return err
 	}
 
-	handler, err := proxy.New(cfg, proxy.Options{AllowUnauthenticated: *devUnauth, Logger: logger, Auth: authHandler})
+	handler, err := proxy.New(cfg, proxy.Options{
+		SkipPolicy:    *devSkipPolicy,
+		Logger:        logger,
+		Auth:          authHandler,
+		Authenticator: authHandler,
+		CookieNames:   authn.CookieNames(cfg.Session.CookieName),
+	})
 	if err != nil {
 		return err
 	}
-	if *devUnauth {
-		logger.Warn("DEV MODE: requests are proxied WITHOUT authentication; loopback listeners only")
+	if *devSkipPolicy {
+		logger.Warn("DEV MODE: any signed-in user can reach every route (no policy); loopback listeners only")
 	}
 
 	var hooks []shutdownFunc

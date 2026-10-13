@@ -326,3 +326,23 @@ func (s *Store) MarkUsed(ctx context.Context, ns, token string, ttl time.Duratio
 	}
 	return first, nil
 }
+
+// DeleteApp removes one app session. Unknown IDs, and IDs that are not app
+// sessions (a main session ID presented as an app cookie), are left alone.
+func (s *Store) DeleteApp(ctx context.Context, id string) error {
+	hash := HashID(id)
+	rec, err := s.load(ctx, hash)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if rec.Kind != kindApp {
+		return nil
+	}
+	if err := s.rdb.Del(ctx, sessionKey(hash)).Err(); err != nil {
+		return fmt.Errorf("session store: %w", err)
+	}
+	return nil
+}

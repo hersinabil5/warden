@@ -23,7 +23,7 @@ func (f *fakeAuth) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func TestAuthHandlerOnlyOnAuthHost(t *testing.T) {
 	echo := newEcho(t)
 	auth := &fakeAuth{}
-	h, err := New(testConfig(t, echo.URL), Options{Auth: auth, AllowUnauthenticated: true, Logger: slog.New(slog.DiscardHandler)})
+	h, err := New(testConfig(t, echo.URL), Options{Auth: auth, SkipPolicy: true, Authenticator: allowAll{}, Logger: slog.New(slog.DiscardHandler)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +40,9 @@ func TestAuthHandlerOnlyOnAuthHost(t *testing.T) {
 		{"healthz still served by proxy", "https://auth.example.test/.warden/healthz", http.StatusOK, false},
 		{"non-warden path on auth host", "https://auth.example.test/login", http.StatusNotFound, false},
 		{"warden lookalike prefix", "https://auth.example.test/.wardenx/login", http.StatusNotFound, false},
-		{"login on app host", "https://app.example.test/.warden/login", http.StatusNotFound, false},
+		// Route hosts reach the auth handler too (for the handshake); it
+		// decides what exists there (authn tests cover login being 404).
+		{"warden path on app host", "https://app.example.test/.warden/handshake", http.StatusTeapot, true},
 		{"login on unknown host", "https://evil.example/.warden/login", http.StatusNotFound, false},
 		{"auth host lookalike", "https://auth.example.test.evil/.warden/login", http.StatusNotFound, false},
 	}

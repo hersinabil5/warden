@@ -156,8 +156,8 @@ func TestRequestLogLine(t *testing.T) {
 	up := newEcho(t)
 	var buf bytes.Buffer
 	h, err := New(testConfig(t, up.URL), Options{
-		AllowUnauthenticated: true,
-		Logger:               slog.New(slog.NewJSONHandler(&buf, nil)),
+		SkipPolicy: true, Authenticator: allowAll{},
+		Logger: slog.New(slog.NewJSONHandler(&buf, nil)),
 	})
 	if err != nil {
 		t.Fatal(err)

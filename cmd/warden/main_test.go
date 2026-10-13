@@ -19,10 +19,13 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -593,14 +596,18 @@ func TestRunServesHTTPSAndRedirects(t *testing.T) {
 	}))
 	defer upstream.Close()
 	env := newTestEnv(t, strings.Replace(minimalConfig, "http://127.0.0.1:9001", upstream.URL, 1))
-	startRun(t, "-config", env.path, "-dev-allow-unauthenticated")
+	startRun(t, "-config", env.path, "-dev-skip-policy")
 
 	https := clientFor(env.httpsAddr, env.pool)
 	_, httpsPort, _ := net.SplitHostPort(env.httpsAddr)
 
+	// Unauthenticated: sent to login, never to the upstream.
 	resp := get(t, https, "https://app.example.test/")
-	if resp.StatusCode != http.StatusOK || resp.Body != "hello from upstream" {
-		t.Errorf("proxied response = %d %q", resp.StatusCode, resp.Body)
+	if resp.StatusCode != http.StatusFound || !strings.HasPrefix(resp.Header.Get("Location"), "https://auth.example.test:"+httpsPort+"/.warden/login?") {
+		t.Errorf("unauthenticated response = %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	if strings.Contains(resp.Body, "hello from upstream") {
+		t.Error("upstream reached without a session")
 	}
 
 	resp = get(t, https, "https://auth.example.test/")
@@ -648,12 +655,118 @@ func TestRunServesLogin(t *testing.T) {
 	}
 }
 
+// browserFor is a cookie-keeping client that sends *.example.test to Warden
+// and everything else (the fake IdP) to its real address, and does not follow
+// redirects, so tests can inspect each hop.
+func browserFor(t *testing.T, env testEnv) *http.Client {
+	t.Helper()
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var d net.Dialer
+	return &http.Client{
+		Timeout: 5 * time.Second,
+		Jar:     jar,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				if strings.Contains(addr, ".example.test:") {
+					addr = env.httpsAddr
+				}
+				return d.DialContext(ctx, network, addr)
+			},
+			TLSClientConfig: &tls.Config{RootCAs: env.pool, MinVersion: tls.VersionTLS12},
+		},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+}
+
+// TestRunLoginEndToEnd is the M2 acceptance flow through real listeners: a
+// logged-out request to a route goes to the IdP, and after login the browser
+// lands on the original URL with a host-only app cookie.
+func TestRunLoginEndToEnd(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = io.WriteString(w, "upstream saw "+r.URL.RequestURI()+" cookies="+r.Header.Get("Cookie")) //nolint:gosec // G705: test upstream echoing the request as text/plain
+	}))
+	defer upstream.Close()
+	idp := testidp.New(t)
+	idp.SetClientSecret(testSecret)
+	env := newTestEnvWithIdP(t, strings.Replace(minimalConfig, "http://127.0.0.1:9001", upstream.URL, 1), idp)
+	startRun(t, "-config", env.path, "-dev-skip-policy")
+	_, port := splitPort(t, env.httpsAddr)
+
+	b := browserFor(t, env)
+	final, hops := browse(t, b, "https://app.example.test:"+port+"/dash?x=1")
+	if final.StatusCode != http.StatusOK || final.Body != "upstream saw /dash?x=1 cookies=" {
+		t.Fatalf("final = %d %q\nhops:\n%s", final.StatusCode, final.Body, strings.Join(hops, "\n"))
+	}
+	if !strings.HasPrefix(hops[len(hops)-1], "200 https://app.example.test:"+port+"/dash?x=1") {
+		t.Fatalf("did not land on the original URL:\n%s", strings.Join(hops, "\n"))
+	}
+	if idp.TokenHits() != 1 {
+		t.Errorf("token endpoint hits = %d, want 1", idp.TokenHits())
+	}
+
+	// Host-only cookies: the app cookie is not sent to another route or the
+	// auth host, and the main cookie never reaches the app.
+	appURL, _ := url.Parse("https://app.example.test:" + port + "/")
+	authURL, _ := url.Parse("https://auth.example.test:" + port + "/")
+	if len(b.Jar.Cookies(appURL)) == 0 || len(b.Jar.Cookies(authURL)) == 0 {
+		t.Fatal("expected cookies on both hosts")
+	}
+	for _, c := range b.Jar.Cookies(appURL) {
+		for _, a := range b.Jar.Cookies(authURL) {
+			if c.Name == a.Name && c.Value == a.Value {
+				t.Errorf("cookie %s shared between hosts", c.Name)
+			}
+		}
+	}
+}
+
+// browse follows redirects from target with b until a non-redirect response,
+// returning it and each hop ("status url").
+func browse(t *testing.T, b *http.Client, target string) (response, []string) {
+	t.Helper()
+	var hops []string
+	for range 10 {
+		resp := get(t, b, target)
+		hops = append(hops, strconv.Itoa(resp.StatusCode)+" "+target)
+		if resp.StatusCode != http.StatusFound {
+			return resp, hops
+		}
+		target = resp.Header.Get("Location")
+	}
+	t.Fatalf("redirect loop:\n%s", strings.Join(hops, "\n"))
+	return response{}, nil
+}
+
+func splitPort(t *testing.T, addr string) (string, string) {
+	t.Helper()
+	h, p, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h, p
+}
+
+// Without the dev flag there is no policy engine yet (M3), so even a
+// signed-in user is denied: default deny (invariant 1).
 func TestRunDeniesByDefault(t *testing.T) {
-	env := newTestEnv(t, minimalConfig)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "upstream")
+	}))
+	defer upstream.Close()
+	idp := testidp.New(t)
+	idp.SetClientSecret(testSecret)
+	env := newTestEnvWithIdP(t, strings.Replace(minimalConfig, "http://127.0.0.1:9001", upstream.URL, 1), idp)
 	startRun(t, "-config", env.path)
-	resp := get(t, clientFor(env.httpsAddr, env.pool), "https://app.example.test/")
-	if resp.StatusCode != http.StatusForbidden {
-		t.Errorf("status = %d, want 403 without the dev flag", resp.StatusCode)
+	_, port := splitPort(t, env.httpsAddr)
+
+	final, hops := browse(t, browserFor(t, env), "https://app.example.test:"+port+"/")
+	if final.StatusCode != http.StatusForbidden || idp.TokenHits() != 1 {
+		t.Errorf("signed-in request = %d (token hits %d), want 403 after login\n%s",
+			final.StatusCode, idp.TokenHits(), strings.Join(hops, "\n"))
 	}
 }
 
@@ -668,7 +781,7 @@ func TestRunStartupFailures(t *testing.T) {
 		wantErr string
 	}{
 		{"missing certificate", []string{"-config", missingCert.path}, "loading TLS certificate"},
-		{"dev flag on public listener", []string{"-config", publicListen, "-dev-allow-unauthenticated"}, "loopback"},
+		{"dev flag on public listener", []string{"-config", publicListen, "-dev-skip-policy"}, "loopback"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -251,3 +251,38 @@ the log, keyed by request ID with hashed `state` and session prefixes.
 **Consequences:** Users whose IdP account has no verified email get no email in their session, so
 `email_domains` rules won't match them. Groups are used exactly as the IdP sends them. Keycloak's
 mapper uses flat names (`full.path: false`).
+
+## D13: Handshake binding, cookie isolation, and `-dev-skip-policy`
+
+**Context:** D1's one-time code arrives in a URL. If the code were the only proof, an attacker could
+start a login as themselves and send the victim their handshake link, signing the victim into the
+app as the attacker (login CSRF / session swap). Separately, upstreams sit on the same host as
+Warden's app cookie: they receive it in `Cookie` and could overwrite it with `Set-Cookie`. And now
+that login exists, D6's "proxy without authentication" flag is no longer needed.
+
+**Decision:**
+- **Binding.** An unauthenticated GET on an app host sets (or reuses) a `__Host-warden_hs` cookie
+  holding 256 random bits, valid for 10 minutes, and redirects to
+  `https://<auth>/.warden/login?rd=<url>&hs=<base64url(sha256(cookie))>`. The hash is sealed into
+  the pre-auth cookie and stored in the handshake code's record. Redeeming a code requires the
+  binding cookie whose hash matches, on the host the code was issued for, within 30 seconds, once
+  (`GETDEL`; any attempt spends the code). Without `hs` (a hand-made `login?rd=` link), Warden
+  never issues a code: after login it returns the browser to the app URL, which starts a bound
+  handshake.
+- **Single sign-on.** A login request with a live main session skips the IdP and goes straight to
+  the handshake.
+- **Host scoping.** The auth handler serves login, callback and the session page only on the auth
+  host, and the handshake only on route hosts. Everything else under `/.warden/` is 404.
+- **Unauthenticated requests:** GET/HEAD get a login redirect; other methods get 401 (no redirect
+  dance for API calls). A dead app cookie is cleared. A Redis error is a 500 and a deny.
+- **Cookie isolation.** The proxy removes Warden's cookies (`<session cookie>` and
+  `__Host-warden_*`) from requests to upstreams, and drops upstream `Set-Cookie` headers for those
+  names.
+- **Dev flag.** `-dev-allow-unauthenticated` is replaced by `-dev-skip-policy`. Authentication is
+  always enforced. The flag only lets any signed-in user through until the policy engine exists
+  (M3), keeps D6's loopback-only restriction, and is removed in M3. Without it, signed-in users get
+  403 (default deny).
+
+**Consequences:** Every app needs one extra redirect per session (D1). The binding cookie is shared
+by the tabs of one browser on a host, so parallel logins work. An app that relies on reading a
+cookie named like Warden's won't see it.

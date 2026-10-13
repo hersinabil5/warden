@@ -18,6 +18,7 @@ var pageTemplate = template.Must(template.New("page").Parse(`<!doctype html>
 
 var pageMessages = map[int]string{
 	http.StatusBadRequest:          "The request could not be understood.",
+	http.StatusUnauthorized:        "Sign in to continue, then try again.",
 	http.StatusForbidden:           "You do not have access to this page.",
 	http.StatusNotFound:            "There is nothing here.",
 	http.StatusMethodNotAllowed:    "That method is not allowed here.",

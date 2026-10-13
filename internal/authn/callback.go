@@ -124,7 +124,7 @@ func (h *Handler) callback(w http.ResponseWriter, r *http.Request) {
 	session.SetCookie(w, h.cookieName, id, h.sessions.AbsoluteTTL())
 	h.logger.Info("login succeeded", "request_id", requestID(w), "session", *sess,
 		"session_hash", session.HashID(id)[:12], "state_hash", hashPrefix(state))
-	http.Redirect(w, r, SessionPath, http.StatusFound)
+	h.continueTo(w, r, id, pa.ReturnTo, pa.Binding)
 }
 
 // verifyIDToken completes invariant 3 on top of go-oidc (signature with the

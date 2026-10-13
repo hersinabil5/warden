@@ -32,6 +32,7 @@ type preAuth struct {
 	Verifier string `json:"v"`           // PKCE code verifier
 	Expires  int64  `json:"e"`           // Unix seconds
 	ReturnTo string `json:"r,omitempty"` // validated return URL; empty means the auth host's session page
+	Binding  string `json:"b,omitempty"` // hash of the app host's handshake cookie (D13)
 }
 
 // newPreAuth returns fresh random login state: 256-bit state and nonce from
