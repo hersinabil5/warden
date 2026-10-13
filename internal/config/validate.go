@@ -17,6 +17,11 @@ import (
 // maxIdentityTTL caps the signed identity assertion lifetime (PLAN.md M4).
 const maxIdentityTTL = 60 * time.Second
 
+// idTokenAlgs is the allowlist for auth.id_token_algs: asymmetric JWS
+// algorithms only. "none" and HMAC (HS*) are absent on purpose (invariant 3):
+// HMAC with a public key as the secret is the classic alg-confusion forgery.
+var idTokenAlgs = []string{"RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512"}
+
 var envNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // problems collects validation errors so one run reports all of them.
@@ -111,6 +116,18 @@ func (c *Config) validateAuth(p *problems, getenv func(string) string) {
 	}
 	if !slices.Contains(a.Scopes, "openid") {
 		p.addf("auth.scopes", "must include openid")
+	}
+	if len(a.IDTokenAlgs) == 0 {
+		p.addf("auth.id_token_algs", "is required (for example [RS256])")
+	}
+	for i, alg := range a.IDTokenAlgs {
+		field := fmt.Sprintf("auth.id_token_algs[%d]", i)
+		switch {
+		case !slices.Contains(idTokenAlgs, alg):
+			p.addf(field, "%q is not allowed; use one of %s", alg, strings.Join(idTokenAlgs, ", "))
+		case slices.Index(a.IDTokenAlgs, alg) < i:
+			p.addf(field, "duplicate %q", alg)
+		}
 	}
 	if a.GroupsClaim == "" {
 		p.addf("auth.groups_claim", "is required")

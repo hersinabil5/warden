@@ -28,6 +28,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/hersinabil5/warden/internal/authn/testidp"
 )
 
 // syncBuffer is a bytes.Buffer safe for concurrent writes and reads.
@@ -62,6 +64,7 @@ auth:
   client_id: warden-proxy
   client_secret_env: ` + testSecretEnv + `
   scopes: [openid]
+  id_token_algs: [RS256]
   groups_claim: groups
   group_refresh_interval: 5m
 session: {redis_addr: "localhost:6379", cookie_name: _warden, absolute_ttl: 8h, idle_timeout: 1h}
@@ -95,8 +98,13 @@ func writeConfig(t *testing.T) string {
 }
 
 // newTestEnv makes content runnable: it swaps in free loopback ports (adding a
-// redirect listener) and a freshly generated certificate.
+// redirect listener), a freshly generated certificate, and a fake IdP.
 func newTestEnv(t *testing.T, content string) testEnv {
+	t.Helper()
+	return newTestEnvWithIdP(t, content, testidp.New(t))
+}
+
+func newTestEnvWithIdP(t *testing.T, content string, idp *testidp.IdP) testEnv {
 	t.Helper()
 	dir := t.TempDir()
 	certPath, keyPath, pool := writeTestCert(t, dir)
@@ -105,6 +113,7 @@ func newTestEnv(t *testing.T, content string) testEnv {
 		`listen: ":8443"`, `listen: "`+env.httpsAddr+`"`+"\nhttp_redirect_listen: \""+env.redirectAddr+`"`,
 		"cert_file: cert.pem", "cert_file: "+certPath,
 		"key_file: key.pem", "key_file: "+keyPath,
+		"issuer: https://idp.example.test/realms/warden", "issuer: "+idp.Issuer,
 	).Replace(content)
 	env.path = writeConfigContent(t, content)
 	return env
@@ -291,29 +300,59 @@ func TestRunStartsAndStopsOnCancel(t *testing.T) {
 	}
 }
 
-func TestRunLogLevelFiltersDebug(t *testing.T) {
+// runUntilStarted runs warden with a fresh test env, cancels once the HTTPS
+// listener accepts connections (startup, including discovery, is complete),
+// and returns all output. Polling the port works at any log level.
+func runUntilStarted(t *testing.T, extraArgs ...string) string {
+	t.Helper()
+	env := newTestEnv(t, minimalConfig)
 	var out syncBuffer
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // return right after startup
-
-	if err := run(ctx, []string{"-config", writeConfig(t), "-log-level", "warn"}, &out, testGetenv, nil); err != nil {
-		t.Fatal(err)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- run(ctx, append([]string{"-config", env.path}, extraArgs...), &out, testGetenv, nil) }()
+	waitFor(t, func() bool {
+		var d net.Dialer
+		c, err := d.DialContext(t.Context(), "tcp", env.httpsAddr)
+		if err != nil {
+			return false
+		}
+		_ = c.Close()
+		return true
+	})
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("run: %v\n%s", err, out.String())
 	}
-	if strings.Contains(out.String(), `"level":"INFO"`) {
-		t.Errorf("info lines logged at warn level:\n%s", out.String())
+	return out.String()
+}
+
+func TestRunLogLevelFiltersDebug(t *testing.T) {
+	out := runUntilStarted(t, "-log-level", "warn")
+	if strings.Contains(out, `"level":"INFO"`) {
+		t.Errorf("info lines logged at warn level:\n%s", out)
 	}
 }
 
 func TestRunDoesNotLogSecrets(t *testing.T) {
+	out := runUntilStarted(t, "-log-level", "debug")
+	if !strings.Contains(out, "OIDC provider discovered") {
+		t.Fatalf("startup did not get past discovery:\n%s", out)
+	}
+	if strings.Contains(out, testSecret) {
+		t.Errorf("client secret leaked into logs:\n%s", out)
+	}
+}
+
+func TestRunCancelDuringDiscoveryIsCleanStop(t *testing.T) {
 	var out syncBuffer
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-
-	if err := run(ctx, []string{"-config", writeConfig(t), "-log-level", "debug"}, &out, testGetenv, nil); err != nil {
-		t.Fatal(err)
+	if err := run(ctx, []string{"-config", writeConfig(t)}, &out, testGetenv, nil); err != nil {
+		t.Fatalf("run = %v, want clean stop", err)
 	}
-	if strings.Contains(out.String(), testSecret) {
-		t.Errorf("client secret leaked into logs:\n%s", out.String())
+	if hasMsg(logLines(t, out.String()), "warden starting") {
+		t.Error("started serving despite cancellation")
 	}
 }
 
@@ -608,6 +647,35 @@ func TestRunStartupFailures(t *testing.T) {
 				t.Fatalf("err = %v, want %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+// A misconfigured IdP must stop startup before any listener is bound, and the
+// error must not carry the client secret.
+func TestRunFailsFastOnBadIdP(t *testing.T) {
+	idp := testidp.New(t)
+	idp.EditDiscovery(func(d map[string]any) { d["code_challenge_methods_supported"] = []string{"plain"} })
+	env := newTestEnvWithIdP(t, minimalConfig, idp)
+
+	var out syncBuffer
+	err := run(t.Context(), []string{"-config", env.path}, &out, testGetenv, nil)
+	if err == nil || !strings.Contains(err.Error(), "S256") {
+		t.Fatalf("err = %v, want PKCE S256 error", err)
+	}
+	if strings.Contains(err.Error()+out.String(), testSecret) {
+		t.Error("client secret appears in error or logs")
+	}
+	for _, addr := range []string{env.httpsAddr, env.redirectAddr} {
+		var lc net.ListenConfig
+		ln, lerr := lc.Listen(t.Context(), "tcp", addr)
+		if lerr != nil {
+			t.Errorf("%s still bound after failed startup: %v", addr, lerr)
+			continue
+		}
+		_ = ln.Close()
+	}
+	if hasMsg(logLines(t, out.String()), "warden starting") {
+		t.Error("logged startup despite failed discovery")
 	}
 }
 

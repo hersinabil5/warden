@@ -15,6 +15,7 @@ auth:
   client_id: warden-proxy
   client_secret_env: WARDEN_CLIENT_SECRET   # env var NAME; the secret never goes in this file
   scopes: [openid, email, profile]
+  id_token_algs: [RS256]                   # pinned ID token algs (Keycloak default); none/HS* are rejected
   groups_claim: groups
   group_refresh_interval: 5m
 

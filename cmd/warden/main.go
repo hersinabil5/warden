@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/hersinabil5/warden/internal/authn"
 	"github.com/hersinabil5/warden/internal/config"
 	"github.com/hersinabil5/warden/internal/proxy"
 )
@@ -49,7 +50,8 @@ func main() {
 	}
 }
 
-// run parses flags, loads the config, sets up logging, starts the HTTPS
+// run parses flags, loads the config, sets up logging, discovers the OIDC
+// provider, starts the HTTPS
 // listener (and the optional HTTP redirect listener), and blocks until ctx is
 // cancelled or a server fails, then shuts down gracefully. Logs go to logOut as JSON. getenv
 // resolves secrets named in the config. If onLogger is non-nil it receives the
@@ -96,6 +98,17 @@ func run(ctx context.Context, args []string, logOut io.Writer, getenv func(strin
 	}
 	if *devUnauth {
 		logger.Warn("DEV MODE: requests are proxied WITHOUT authentication; loopback listeners only")
+	}
+
+	// Fail fast, before binding any listener, if the IdP is unreachable or
+	// misconfigured. The login flow (next M2 task) consumes the provider.
+	if _, err = authn.Discover(ctx, cfg.Auth, authn.DiscoverOptions{Logger: logger}); err != nil {
+		if ctx.Err() != nil {
+			// A shutdown signal while waiting for the IdP is a clean stop.
+			logger.Info("shutdown requested during startup; warden stopped")
+			return nil
+		}
+		return err
 	}
 
 	var hooks []shutdownFunc

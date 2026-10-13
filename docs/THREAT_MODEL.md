@@ -22,7 +22,7 @@ Update this whenever a change adds, removes, or weakens a mitigation.
 |---|--------|-----------|-----------|--------|
 | T1 | Unauthenticated access to internal apps | Default-deny routing (unknown host 404, routed host 403 until login exists); login required. Temporary loopback-only dev bypass (D6) | M1–M3 | partial |
 | T2 | Login CSRF / session fixation | `state` bound to pre-auth cookie; new session ID on login | M2 | planned |
-| T3 | Token forgery or substitution | Full ID token validation, pinned algs, `aud`, `nonce` | M2 | planned |
+| T3 | Token forgery or substitution | Full ID token validation: signature via JWKS with pinned asymmetric algs (no `none`/`HS*`, D8), `iss`, `aud`, `exp` done; `nonce`/`iat` at callback | M2 | partial |
 | T4 | Open redirect via return URL | Return URL must match a configured route host | M2 | planned |
 | T5 | Policy bypass via path tricks | Normalize path; forward the normalized path; reject ambiguous encodings | M3 | planned |
 | T6 | Identity header spoofing | Strip all identity headers; signed short-lived assertion | M4 | planned |
@@ -42,6 +42,9 @@ Update this whenever a change adds, removes, or weakens a mitigation.
 | T20 | Forged or colliding request IDs in logs/audit | Warden always generates the ID; client and upstream values discarded (D7) | M1 | done |
 | T21 | Resource exhaustion (slow-loris clients, hung upstreams) | Server read-header/read/write/idle timeouts; upstream dial/TLS/response-header timeouts (D6) | M1 | done |
 | T22 | Internal details leaked in error responses | Generic error pages with request ID only; causes go to logs | M1 | done |
+| T23 | IdP mix-up or malicious discovery metadata (wrong issuer, http endpoints, no PKCE) | Discovery `issuer` must match exactly; endpoints https-only (loopback excepted), no credentials; S256 and `code` required; JWKS must hold a usable public key and no private/symmetric keys (D8) | M2 | done |
+| T24 | Algorithm downgrade / confusion (`alg: none`, HS256 keyed with the RSA public key) | `auth.id_token_algs` allows asymmetric algs only; verifier pinned to their intersection with the IdP's list (D8) | M2 | done |
+| T25 | Startup hang or traffic redirection on IdP calls | Bounded retry budget; IdP client timeouts, 1 MiB body cap, no proxy env, no redirects (D8) | M2 | done |
 
 ## Out of scope (explicitly not defended)
 

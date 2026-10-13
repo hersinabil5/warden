@@ -25,6 +25,7 @@ auth:
   client_id: warden-proxy
   client_secret_env: TEST_CLIENT_SECRET
   scopes: [openid, email]
+  id_token_algs: [RS256]
   groups_claim: groups
   group_refresh_interval: 5m
 session:
@@ -135,6 +136,20 @@ func TestParseAllowsLocalHTTPIssuer(t *testing.T) {
 	}
 }
 
+func TestParseIDTokenAlgs(t *testing.T) {
+	for _, algs := range []string{"[RS256]", "[ES256]", "[RS256, ES256, PS256]", "[RS512, ES384, ES512, PS384, PS512, RS384]"} {
+		in := edit(t, "  id_token_algs: [RS256]", "  id_token_algs: "+algs)
+		cfg, err := Parse([]byte(in), testGetenv)
+		if err != nil {
+			t.Errorf("id_token_algs %s: %v", algs, err)
+			continue
+		}
+		if len(cfg.Auth.IDTokenAlgs) == 0 {
+			t.Errorf("id_token_algs %s: parsed empty", algs)
+		}
+	}
+}
+
 func TestLoadExampleConfig(t *testing.T) {
 	getenv := func(name string) string {
 		if name == "WARDEN_CLIENT_SECRET" {
@@ -231,6 +246,17 @@ func TestParseRejectsInvalid(t *testing.T) {
 		{"secret env empty name", "  client_secret_env: TEST_CLIENT_SECRET", `  client_secret_env: ""`, "auth.client_secret_env"},
 		{"scopes without openid", "  scopes: [openid, email]", "  scopes: [email]", "openid"},
 		{"scopes with empty entry", "  scopes: [openid, email]", `  scopes: [openid, ""]`, "auth.scopes"},
+		// ID token algorithms (invariant 3): asymmetric allowlist only.
+		{"id_token_algs missing", "  id_token_algs: [RS256]\n", "", "auth.id_token_algs"},
+		{"id_token_algs empty", "  id_token_algs: [RS256]", "  id_token_algs: []", "auth.id_token_algs"},
+		{"id_token_algs none", "  id_token_algs: [RS256]", "  id_token_algs: [none]", "none"},
+		{"id_token_algs NONE", "  id_token_algs: [RS256]", "  id_token_algs: [NONE]", "NONE"},
+		{"id_token_algs none alongside RS256", "  id_token_algs: [RS256]", "  id_token_algs: [RS256, none]", "none"},
+		{"id_token_algs HS256", "  id_token_algs: [RS256]", "  id_token_algs: [HS256]", "HS256"},
+		{"id_token_algs HS512", "  id_token_algs: [RS256]", "  id_token_algs: [HS512]", "HS512"},
+		{"id_token_algs lowercase", "  id_token_algs: [RS256]", "  id_token_algs: [rs256]", "rs256"},
+		{"id_token_algs unknown", "  id_token_algs: [RS256]", "  id_token_algs: [RS1024]", "RS1024"},
+		{"id_token_algs duplicate", "  id_token_algs: [RS256]", "  id_token_algs: [RS256, RS256]", "duplicate"},
 		{"groups claim empty", "  groups_claim: groups", `  groups_claim: ""`, "auth.groups_claim"},
 		{"group refresh zero", "  group_refresh_interval: 5m", "  group_refresh_interval: 0s", "auth.group_refresh_interval"},
 		{"auth domain invalid", "  domain: auth.example.test", "  domain: auth.example.test:8443", "auth.domain"},

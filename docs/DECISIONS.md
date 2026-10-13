@@ -117,3 +117,35 @@ with upstream apps and with attacker-controlled input.
 
 **Consequences:** An upstream app that itself serves `/.warden/...` paths cannot be proxied
 unchanged. Upstreams see Warden's request ID, which is what correlation needs.
+
+## D8: OIDC discovery: pinned algorithms, strict metadata, bounded retries
+
+**Context:** Everything about token validation flows from the discovery document and JWKS. Taking
+them on trust would let a misconfigured or hostile IdP endpoint (or anything spoofing it)
+weaken validation: advertise `none` or `HS256`, point `jwks_uri` at plain HTTP, drop PKCE, or name
+a different issuer. Startup also has to cope with Keycloak still booting.
+
+**Decision:**
+- `auth.id_token_algs` is required and limited to asymmetric algorithms (`RS*`, `PS*`, `ES*`).
+  `none` and `HS*` cannot be configured. The verifier accepts only the pinned algorithms the IdP
+  also advertises, and startup fails if that set is empty.
+- Warden fetches the discovery document itself and rejects it unless: `issuer` matches the config
+  exactly; `authorization_endpoint`, `token_endpoint` and `jwks_uri` (plus `userinfo_endpoint` and
+  `end_session_endpoint` when present) are absolute https URLs without credentials (plain http only
+  on loopback, the same rule as the issuer); `response_types_supported` includes `code`; and
+  `code_challenge_methods_supported` includes `S256`.
+- Warden fetches the JWKS once at startup and requires at least one public signing key that fits a
+  pinned algorithm. Unknown key types are skipped. Private or symmetric key material is a hard error.
+- Network errors, 5xx, 408 and 429 are retried with exponential backoff (500ms doubling to a 10s
+  cap, with jitter in [d/2, d]) for up to 60s. Everything else fails at once, so a typo'd issuer
+  doesn't stall startup. Discovery runs before any listener is bound. A shutdown signal during
+  discovery is a clean stop.
+- The IdP HTTP client has a 10s overall timeout (5s dial, 5s TLS handshake, 10s response header),
+  ignores `HTTP_PROXY`/`HTTPS_PROXY`, requires TLS 1.2+, caps response bodies at 1 MiB, and never
+  follows redirects. go-oidc gets it via `oidc.ClientContext`, so JWKS refreshes during key
+  rotation use it too.
+
+**Consequences:** An IdP that only signs with HMAC, or doesn't advertise S256, can't be used. An
+issuer URL that redirects (e.g. a missing trailing path) fails with a message to configure the
+exact URL. A deployment that needs an egress proxy to reach the IdP would need an explicit config
+option (none today).

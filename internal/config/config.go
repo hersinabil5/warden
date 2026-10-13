@@ -34,6 +34,7 @@ type Auth struct {
 	ClientSecretEnv      string        `yaml:"client_secret_env"`
 	ClientSecret         Secret        `yaml:"-"` // read from ClientSecretEnv
 	Scopes               []string      `yaml:"scopes"`
+	IDTokenAlgs          []string      `yaml:"id_token_algs"` // pinned JWS algs; asymmetric only
 	GroupsClaim          string        `yaml:"groups_claim"`
 	GroupRefreshInterval time.Duration `yaml:"group_refresh_interval"`
 }
