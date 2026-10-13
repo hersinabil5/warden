@@ -158,15 +158,34 @@ func newJWKSClient(caFile string) (*http.Client, error) {
 		}
 		tlsCfg.RootCAs = pool
 	}
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
 	return &http.Client{
 		Timeout: 5 * time.Second,
 		Transport: &http.Transport{
-			Proxy:               nil,
+			Proxy: nil,
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				return dialer.DialContext(ctx, network, localhostAddr(addr))
+			},
 			TLSClientConfig:     tlsCfg,
 			TLSHandshakeTimeout: 5 * time.Second,
 		},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}, nil
+}
+
+// localhostAddr sends *.localhost to the loopback address (RFC 6761,
+// section 6.3), as browsers and curl do; Go's resolver on macOS does not.
+// TLS still verifies the certificate against the original name.
+func localhostAddr(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	h := strings.ToLower(strings.TrimSuffix(host, "."))
+	if h == "localhost" || strings.HasSuffix(h, ".localhost") {
+		return net.JoinHostPort("127.0.0.1", port)
+	}
+	return addr
 }
 
 // newHandler answers every request with the verified identity, or 401.

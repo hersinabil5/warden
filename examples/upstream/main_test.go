@@ -194,3 +194,19 @@ func TestParseFlags(t *testing.T) {
 		t.Error("positional argument accepted")
 	}
 }
+
+func TestLocalhostAddr(t *testing.T) {
+	for in, want := range map[string]string{
+		"auth.warden.localhost:8443":        "127.0.0.1:8443",
+		"AUTH.Warden.LOCALHOST.:8443":       "127.0.0.1:8443",
+		"localhost:8443":                    "127.0.0.1:8443",
+		"warden.localhost.evil.example:443": "warden.localhost.evil.example:443",
+		"localhostevil.example:443":         "localhostevil.example:443",
+		"example.com:443":                   "example.com:443",
+		"no-port":                           "no-port",
+	} {
+		if got := localhostAddr(in); got != want {
+			t.Errorf("localhostAddr(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
