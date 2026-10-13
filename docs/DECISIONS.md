@@ -149,3 +149,29 @@ a different issuer. Startup also has to cope with Keycloak still booting.
 issuer URL that redirects (e.g. a missing trailing path) fails with a message to configure the
 exact URL. A deployment that needs an egress proxy to reach the IdP would need an explicit config
 option (none today).
+
+## D9: Pre-auth login cookie: sealed, per-login, per-process key
+
+**Context:** Between `/.warden/login` and the callback, Warden must remember `state`, `nonce` and the
+PKCE verifier and bind them to the browser (invariant 4) before Redis sessions exist. The plan asks
+for a signed cookie. The verifier and nonce shouldn't be readable by anything that can see cookies.
+
+**Decision:**
+- The cookie is sealed with AES-256-GCM (standard library), which both authenticates and encrypts
+  it. The cookie name is the associated data, and `open` also checks that the name matches the
+  sealed `state`, so a value only opens under the name it was issued for. The sealed expiry (10
+  minutes) is checked on open, independent of the browser's `Max-Age`.
+- The name is `__Host-warden_login_<first 16 chars of state>`. The `__Host-` prefix makes browsers
+  enforce `Secure`, `Path=/` and no `Domain` (invariant 7). One cookie per login means concurrent
+  logins in two tabs don't overwrite each other. Attributes: `HttpOnly; Secure; SameSite=Lax;
+  Max-Age=600`. Lax is enough because the IdP returns with a top-level GET.
+- The key is 32 random bytes generated at startup. It is never configured, stored or logged.
+- `state` and `nonce` are 256-bit `crypto/rand` values. The verifier comes from
+  `oauth2.GenerateVerifier`. Nothing from the login request (query, Host) feeds the authorize URL.
+  `redirect_uri` is built from `auth.domain` and the `listen` port (left out when it's 443).
+- A sealed cookie can be replayed until it expires, so single-use `state` is enforced server-side
+  by the callback, not by the cookie.
+
+**Consequences:** A restart cancels logins in progress (users click login again). Multiple Warden
+instances (M8) would need a shared, rotatable key, which becomes a config secret then. Login
+doesn't accept a return URL yet; that arrives with return-URL validation (invariant 5).

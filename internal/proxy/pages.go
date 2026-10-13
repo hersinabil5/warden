@@ -44,3 +44,9 @@ func writePage(w http.ResponseWriter, code int, requestID string) {
 		Title, Message, RequestID string
 	}{code, http.StatusText(code), msg, requestID})
 }
+
+// ErrorPage writes the generic error page for r, with the request ID the
+// proxy assigned. Handlers mounted by the proxy (Options.Auth) use it.
+func ErrorPage(w http.ResponseWriter, r *http.Request, code int) {
+	writePage(w, code, RequestID(r.Context()))
+}

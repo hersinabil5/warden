@@ -617,6 +617,34 @@ func TestRunServesHTTPSAndRedirects(t *testing.T) {
 	}
 }
 
+func TestRunServesLogin(t *testing.T) {
+	idp := testidp.New(t)
+	env := newTestEnvWithIdP(t, minimalConfig, idp)
+	startRun(t, "-config", env.path)
+
+	resp := get(t, clientFor(env.httpsAddr, env.pool), "https://auth.example.test/.warden/login")
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("status = %d, want 302", resp.StatusCode)
+	}
+	loc := resp.Header.Get("Location")
+	if !strings.HasPrefix(loc, idp.Server.URL+"/auth?") {
+		t.Errorf("Location = %q, want the IdP authorize endpoint", loc)
+	}
+	_, port, _ := net.SplitHostPort(env.httpsAddr)
+	if !strings.Contains(loc, "redirect_uri=https%3A%2F%2Fauth.example.test%3A"+port+"%2F.warden%2Fcallback") {
+		t.Errorf("Location %q lacks the configured redirect_uri", loc)
+	}
+	if !strings.Contains(resp.Header.Get("Set-Cookie"), "__Host-warden_login_") {
+		t.Errorf("no pre-auth cookie: %q", resp.Header.Get("Set-Cookie"))
+	}
+
+	// App hosts do not serve login.
+	resp = get(t, clientFor(env.httpsAddr, env.pool), "https://app.example.test/.warden/login")
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("login on app host = %d, want 404", resp.StatusCode)
+	}
+}
+
 func TestRunDeniesByDefault(t *testing.T) {
 	env := newTestEnv(t, minimalConfig)
 	startRun(t, "-config", env.path)

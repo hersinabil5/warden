@@ -92,23 +92,38 @@ func run(ctx context.Context, args []string, logOut io.Writer, getenv func(strin
 	if err != nil {
 		return fmt.Errorf("loading TLS certificate: %w", err)
 	}
-	handler, err := proxy.New(cfg, proxy.Options{AllowUnauthenticated: *devUnauth, Logger: logger})
-	if err != nil {
-		return err
-	}
-	if *devUnauth {
-		logger.Warn("DEV MODE: requests are proxied WITHOUT authentication; loopback listeners only")
-	}
-
 	// Fail fast, before binding any listener, if the IdP is unreachable or
-	// misconfigured. The login flow (next M2 task) consumes the provider.
-	if _, err = authn.Discover(ctx, cfg.Auth, authn.DiscoverOptions{Logger: logger}); err != nil {
+	// misconfigured.
+	provider, err := authn.Discover(ctx, cfg.Auth, authn.DiscoverOptions{Logger: logger})
+	if err != nil {
 		if ctx.Err() != nil {
 			// A shutdown signal while waiting for the IdP is a clean stop.
 			logger.Info("shutdown requested during startup; warden stopped")
 			return nil
 		}
 		return err
+	}
+	// Per-process key for pre-auth cookies; a restart only cancels logins in
+	// progress (docs/DECISIONS.md D9).
+	cookieKey, err := authn.NewCookieKey()
+	if err != nil {
+		return err
+	}
+	authHandler, err := authn.NewHandler(cfg, provider, authn.HandlerOptions{
+		CookieKey: cookieKey,
+		Logger:    logger,
+		ErrorPage: proxy.ErrorPage,
+	})
+	if err != nil {
+		return err
+	}
+
+	handler, err := proxy.New(cfg, proxy.Options{AllowUnauthenticated: *devUnauth, Logger: logger, Auth: authHandler})
+	if err != nil {
+		return err
+	}
+	if *devUnauth {
+		logger.Warn("DEV MODE: requests are proxied WITHOUT authentication; loopback listeners only")
 	}
 
 	var hooks []shutdownFunc

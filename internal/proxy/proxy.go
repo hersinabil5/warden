@@ -30,6 +30,9 @@ type Options struct {
 	// listeners, and is off by default (docs/DECISIONS.md D6).
 	AllowUnauthenticated bool
 	Logger               *slog.Logger
+	// Auth serves Warden's endpoints under /.warden/ on the auth host (login,
+	// callback). Nil leaves them 404.
+	Auth http.Handler
 	// Transport timeouts for upstream connections; zero means
 	// DefaultTransportTimeouts.
 	TransportTimeouts TransportTimeouts
@@ -38,6 +41,8 @@ type Options struct {
 // Handler routes requests by Host to upstream reverse proxies.
 type Handler struct {
 	routes      map[string]*httputil.ReverseProxy
+	authDomain  string
+	auth        http.Handler
 	allowUnauth bool
 	logger      *slog.Logger
 }
@@ -54,6 +59,8 @@ func New(cfg *config.Config, opts Options) (*Handler, error) {
 
 	h := &Handler{
 		routes:      make(map[string]*httputil.ReverseProxy, len(cfg.Routes)),
+		authDomain:  cfg.Auth.Domain,
+		auth:        opts.Auth,
 		allowUnauth: opts.AllowUnauthenticated,
 		logger:      opts.Logger,
 	}
@@ -126,6 +133,10 @@ func (h *Handler) route(w http.ResponseWriter, r *http.Request, host, id string)
 		return
 	}
 	if r.URL.Path == reservedPrefix || strings.HasPrefix(r.URL.Path, reservedPrefix+"/") {
+		if host == h.authDomain && h.auth != nil {
+			h.auth.ServeHTTP(w, r)
+			return
+		}
 		writePage(w, http.StatusNotFound, id)
 		return
 	}
