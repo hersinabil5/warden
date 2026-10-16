@@ -466,3 +466,25 @@ dashboard can read, without turning the audit log into a second place secrets ca
 **Consequences:** Requests that never reach a decision on a route (e.g. 404 on an unknown host)
 leave no audit trail, only a request log line. Repeated events with no `user` are the place to
 look for scanning.
+
+## D20: Audit sinks
+
+**Context:** Audit events (D19) need to land somewhere durable, and a lost event must not go
+unnoticed.
+
+**Decision:**
+- Two sinks, chosen by `audit.sink`: `file` appends JSON lines to `audit.file`, and `stdout`
+  writes them to standard output (logs stay on stderr, so the two streams never mix). The file is
+  created `0600` in a `0700` directory and opened `O_APPEND`, never truncated; a path that isn't a
+  regular file is refused.
+- **Startup fails** if the audit file can't be opened: Warden doesn't serve unaudited.
+- **Writes are synchronous**, one `Write` per event under a lock, so concurrent events never
+  interleave and the line is on disk (in the page cache) when the handler returns. A local append
+  costs microseconds; an asynchronous queue would add a way to drop events silently.
+- **Failures are loud:** every failed write logs `AUDIT EVENT LOST` at error level with the request
+  ID and a running count. The response already went out, so the request itself can't fail closed;
+  the operator alert is the log line.
+
+**Consequences:** A full disk shows up as error logs, not as an outage. With `stdout`, a reader
+that stops draining the pipe eventually blocks requests; use `file` in production. No rotation:
+use an external tool (`logrotate` with `copytruncate`, or rotate by renaming and restarting).

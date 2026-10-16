@@ -3,7 +3,6 @@ package audit
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"time"
 )
 
@@ -91,30 +90,9 @@ func (e Event) wire() wireEvent {
 
 func (e Event) MarshalJSON() ([]byte, error) { return json.Marshal(e.wire()) }
 
-// Recorder receives audit events. Record must not block the request on a
-// slow or failing sink, and never changes the response.
+// Recorder receives audit events. Record runs after the response is
+// written, so it must be quick and cannot change the response; a recorder
+// handles its own failures.
 type Recorder interface {
 	Record(ctx context.Context, e Event)
-}
-
-// LogRecorder writes events to a slog logger. It stands in until the
-// configured audit sinks exist (PLAN.md M5).
-type LogRecorder struct{ Logger *slog.Logger }
-
-func (l LogRecorder) Record(ctx context.Context, e Event) {
-	w := e.wire()
-	l.Logger.LogAttrs(ctx, slog.LevelInfo, "audit",
-		slog.String("audit_time", w.Time),
-		slog.String("request_id", w.RequestID),
-		slog.String("user", w.User),
-		slog.String("session", w.Session),
-		slog.String("host", w.Host),
-		slog.String("method", w.Method),
-		slog.String("path", w.Path),
-		slog.String("decision", w.Decision.String()),
-		slog.String("rule", w.Rule),
-		slog.String("reason", w.Reason),
-		slog.Float64("latency_ms", w.LatencyMS),
-		slog.Int("status", w.Status),
-	)
 }

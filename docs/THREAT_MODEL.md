@@ -50,7 +50,7 @@ Update this whenever a change adds, removes, or weakens a mitigation.
 | T28 | Upstream stealing or planting Warden cookies | Warden cookies stripped from requests to upstreams; upstream `Set-Cookie` for Warden names dropped (D13) | M2 | done |
 | T29 | Logout CSRF / forced logout | POST-only logout on the auth host; cross-origin `Origin`/`Sec-Fetch-Site` refused; SameSite=Lax cookie (D14) | M2 | done |
 | T30 | Assertion replay or confusion (token for app A used at app B; ID token passed as an assertion) | `aud` = one route host; explicit `typ` checked by verifiers; 60 s lifetime; ES256 only; `kid` from a published set (D17) | M4 | done |
-| T31 | Undetected or repudiated access (no record of who reached what) | One audit event per request to a route host: user, main session hash prefix, normalized path, allow/deny with rule and reason, status, Warden request ID; pre-policy failures recorded as deny (D19). Durable sinks next | M5 | partial |
+| T31 | Undetected or repudiated access (no record of who reached what) | One audit event per request to a route host: user, main session hash prefix, normalized path, allow/deny with rule and reason, status, Warden request ID; pre-policy failures recorded as deny (D19); appended to a 0600 JSONL file or stdout, startup fails without a writable sink, lost events logged at error level (D20) | M5 | done |
 | T32 | Secrets leaking via the audit log | Events omit query strings, cookies, `Authorization`, tokens; session only as a 12-hex prefix of its hash; tested with planted secrets (D19) | M5 | done |
 
 ## Out of scope (explicitly not defended)

@@ -36,7 +36,7 @@ strip_headers:            # in addition to the built-in list
   - X-Remote-User
 
 audit:
-  sink: file              # file | stdout
+  sink: file              # file (JSON lines, appended, 0600) | stdout; startup fails if the file can't be opened
   file: var/audit.jsonl
 
 # Routes: host is a lowercase DNS name (no port). upstream is scheme://host:port only,

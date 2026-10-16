@@ -48,7 +48,7 @@ func main() {
 		stop()
 	}()
 
-	err := run(ctx, os.Args[1:], os.Stderr, os.Getenv, installLogger)
+	err := run(ctx, os.Args[1:], os.Stderr, os.Stdout, os.Getenv, installLogger)
 	stop()
 	switch {
 	case err == nil, errors.Is(err, flag.ErrHelp):
@@ -70,10 +70,11 @@ func installLogger(l *slog.Logger) {
 // run parses flags, loads the config, sets up logging, discovers the OIDC
 // provider, starts the HTTPS
 // listener (and the optional HTTP redirect listener), and blocks until ctx is
-// cancelled or a server fails, then shuts down gracefully. Logs go to logOut as JSON. getenv
+// cancelled or a server fails, then shuts down gracefully. Logs go to logOut as JSON;
+// audit events go to auditOut when audit.sink is stdout. getenv
 // resolves secrets named in the config. If onLogger is non-nil it receives the
 // configured logger (main uses it to install the process default).
-func run(ctx context.Context, args []string, logOut io.Writer, getenv func(string) string, onLogger func(*slog.Logger)) error {
+func run(ctx context.Context, args []string, logOut, auditOut io.Writer, getenv func(string) string, onLogger func(*slog.Logger)) error {
 	fs := flag.NewFlagSet("warden", flag.ContinueOnError)
 	fs.SetOutput(logOut)
 	configPath := fs.String("config", "", "path to the YAML config file (required)")
@@ -102,6 +103,12 @@ func run(ctx context.Context, args []string, logOut io.Writer, getenv func(strin
 	if onLogger != nil {
 		onLogger(logger)
 	}
+
+	sink, err := openAuditSink(cfg.Audit, auditOut, logger)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = sink.Close() }()
 
 	cert, err := tls.LoadX509KeyPair(cfg.TLS.CertFile, cfg.TLS.KeyFile)
 	if err != nil {
@@ -160,9 +167,7 @@ func run(ctx context.Context, args []string, logOut io.Writer, getenv func(strin
 		Auth:          authHandler,
 		Authenticator: authHandler,
 		CookieNames:   authn.CookieNames(cfg.Session.CookieName),
-		// Until the configured sinks exist (PLAN.md M5), events go to the
-		// process log.
-		Audit: audit.LogRecorder{Logger: logger},
+		Audit:         sink,
 	})
 	if err != nil {
 		return err
@@ -224,6 +229,15 @@ func run(ctx context.Context, args []string, logOut io.Writer, getenv func(strin
 	}
 	logger.Info("warden stopped")
 	return nil
+}
+
+// openAuditSink opens the configured audit sink. An unwritable audit file
+// fails startup rather than running unaudited.
+func openAuditSink(cfg config.Audit, stdout io.Writer, logger *slog.Logger) (*audit.Sink, error) {
+	if cfg.Sink == config.AuditSinkStdout {
+		return audit.NewWriterSink(stdout, logger), nil
+	}
+	return audit.OpenFileSink(cfg.File, logger)
 }
 
 // newSigner loads the identity assertion keys: the active signing key and

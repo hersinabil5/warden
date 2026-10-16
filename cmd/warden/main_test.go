@@ -247,7 +247,7 @@ func TestRunRejectsBadInvocation(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 
-			err := run(ctx, tt.args, &out, testGetenv, nil)
+			err := run(ctx, tt.args, &out, io.Discard, testGetenv, nil)
 			if err == nil {
 				t.Fatal("run succeeded, want error")
 			}
@@ -263,7 +263,7 @@ func TestRunRejectsBadInvocation(t *testing.T) {
 
 func TestRunHelpIsNotAFailure(t *testing.T) {
 	var out syncBuffer
-	err := run(context.Background(), []string{"-h"}, &out, testGetenv, nil)
+	err := run(context.Background(), []string{"-h"}, &out, io.Discard, testGetenv, nil)
 	if !errors.Is(err, flag.ErrHelp) {
 		t.Fatalf("err = %v, want flag.ErrHelp", err)
 	}
@@ -276,7 +276,7 @@ func TestRunStartsAndStopsOnCancel(t *testing.T) {
 	var installed bool
 	done := make(chan error, 1)
 	go func() {
-		done <- run(ctx, []string{"-config", writeConfig(t)}, &out, testGetenv, func(l *slog.Logger) {
+		done <- run(ctx, []string{"-config", writeConfig(t)}, &out, io.Discard, testGetenv, func(l *slog.Logger) {
 			installed = l != nil
 		})
 	}()
@@ -319,7 +319,9 @@ func runUntilStarted(t *testing.T, extraArgs ...string) string {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- run(ctx, append([]string{"-config", env.path}, extraArgs...), &out, testGetenv, nil) }()
+	go func() {
+		done <- run(ctx, append([]string{"-config", env.path}, extraArgs...), &out, io.Discard, testGetenv, nil)
+	}()
 	waitFor(t, func() bool {
 		var d net.Dialer
 		c, err := d.DialContext(t.Context(), "tcp", env.httpsAddr)
@@ -357,7 +359,7 @@ func TestRunCancelDuringDiscoveryIsCleanStop(t *testing.T) {
 	var out syncBuffer
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := run(ctx, []string{"-config", writeConfig(t)}, &out, testGetenv, nil); err != nil {
+	if err := run(ctx, []string{"-config", writeConfig(t)}, &out, io.Discard, testGetenv, nil); err != nil {
 		t.Fatalf("run = %v, want clean stop", err)
 	}
 	if hasMsg(logLines(t, out.String()), "warden starting") {
@@ -371,7 +373,7 @@ func TestRunDoesNotEchoSecretFromBadConfig(t *testing.T) {
 	path := writeConfigContent(t, strings.Replace(minimalConfig,
 		"client_secret_env: "+testSecretEnv, "client_secret_env: "+testSecret+"!", 1))
 	var out syncBuffer
-	err := run(context.Background(), []string{"-config", path}, &out, testGetenv, nil)
+	err := run(context.Background(), []string{"-config", path}, &out, io.Discard, testGetenv, nil)
 	if err == nil {
 		t.Fatal("run succeeded, want error")
 	}
@@ -382,7 +384,7 @@ func TestRunDoesNotEchoSecretFromBadConfig(t *testing.T) {
 
 func TestRunFailsWhenSecretEnvUnset(t *testing.T) {
 	var out syncBuffer
-	err := run(context.Background(), []string{"-config", writeConfig(t)}, &out,
+	err := run(context.Background(), []string{"-config", writeConfig(t)}, &out, io.Discard,
 		func(string) string { return "" }, nil)
 	if err == nil || !strings.Contains(err.Error(), testSecretEnv) {
 		t.Fatalf("err = %v, want error naming %s", err, testSecretEnv)
@@ -541,7 +543,7 @@ func startRun(t *testing.T, args ...string) *syncBuffer {
 	var out syncBuffer
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- run(ctx, args, &out, testGetenv, nil) }()
+	go func() { done <- run(ctx, args, &out, io.Discard, testGetenv, nil) }()
 	t.Cleanup(func() {
 		cancel()
 		if err := <-done; err != nil {
@@ -793,6 +795,62 @@ func TestRunDeniesByPolicy(t *testing.T) {
 	}
 }
 
+// PLAN.md M5: every allow and deny lands in the configured audit file with a
+// reason.
+func TestRunAuditsDecisionsToFile(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "upstream")
+	}))
+	defer upstream.Close()
+	idp := testidp.New(t)
+	idp.SetClientSecret(testSecret)
+	auditPath := filepath.Join(t.TempDir(), "audit", "audit.jsonl")
+	cfg := strings.Replace(minimalConfig, "http://127.0.0.1:9001", upstream.URL, 1)
+	cfg = strings.Replace(cfg, "audit: {sink: stdout}", "audit: {sink: file, file: "+auditPath+"}", 1)
+	env := newTestEnvWithIdP(t, cfg, idp)
+	startRun(t, "-config", env.path)
+	_, port := splitPort(t, env.httpsAddr)
+
+	if final, hops := browse(t, browserFor(t, env), "https://app.example.test:"+port+"/x"); final.StatusCode != http.StatusOK {
+		t.Fatalf("signed-in request = %d\n%s", final.StatusCode, strings.Join(hops, "\n"))
+	}
+	var events []map[string]any
+	waitFor(t, func() bool {
+		b, err := os.ReadFile(auditPath) //nolint:gosec // G304: test temp file
+		if err != nil {
+			return false
+		}
+		events = logLines(t, string(b))
+		return len(events) >= 2
+	})
+	first, last := events[0], events[len(events)-1]
+	if first["decision"] != "deny" || first["reason"] != "unauthenticated" || first["path"] != "/x" {
+		t.Errorf("first event = %v, want the unauthenticated deny", first)
+	}
+	if sess, _ := last["session"].(string); last["decision"] != "allow" || last["rule"] != "allow[0]" ||
+		last["status"] != float64(200) || last["user"] == "" || len(sess) != 12 {
+		t.Errorf("last event = %v, want the allow", last)
+	}
+}
+
+// Warden refuses to run unaudited.
+func TestRunFailsOnUnwritableAuditFile(t *testing.T) {
+	blocker := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := strings.Replace(minimalConfig, "audit: {sink: stdout}", "audit: {sink: file, file: "+blocker+"/audit.jsonl}", 1)
+	env := newTestEnv(t, cfg)
+	var out syncBuffer
+	err := run(t.Context(), []string{"-config", env.path}, &out, io.Discard, testGetenv, nil)
+	if err == nil || !strings.Contains(err.Error(), "audit") {
+		t.Fatalf("err = %v, want an audit error", err)
+	}
+	if hasMsg(logLines(t, out.String()), "warden starting") {
+		t.Error("started serving without an audit sink")
+	}
+}
+
 func TestRunStartupFailures(t *testing.T) {
 	missingCert := newTestEnv(t, strings.Replace(minimalConfig, "cert_file: cert.pem", "cert_file: /nonexistent/cert.pem", 1))
 
@@ -806,7 +864,7 @@ func TestRunStartupFailures(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var out syncBuffer
-			err := run(t.Context(), tt.args, &out, testGetenv, nil)
+			err := run(t.Context(), tt.args, &out, io.Discard, testGetenv, nil)
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("err = %v, want %q", err, tt.wantErr)
 			}
@@ -822,7 +880,7 @@ func TestRunFailsFastOnBadIdP(t *testing.T) {
 	env := newTestEnvWithIdP(t, minimalConfig, idp)
 
 	var out syncBuffer
-	err := run(t.Context(), []string{"-config", env.path}, &out, testGetenv, nil)
+	err := run(t.Context(), []string{"-config", env.path}, &out, io.Discard, testGetenv, nil)
 	if err == nil || !strings.Contains(err.Error(), "S256") {
 		t.Fatalf("err = %v, want PKCE S256 error", err)
 	}
@@ -846,7 +904,7 @@ func TestRunFailsFastOnBadIdP(t *testing.T) {
 func TestRunFailsFastWithoutRedis(t *testing.T) {
 	env := newTestEnv(t, strings.Replace(minimalConfig, `redis_addr: "localhost:6379"`, `redis_addr: "`+freeAddr(t)+`"`, 1))
 	var out syncBuffer
-	err := run(t.Context(), []string{"-config", env.path}, &out, testGetenv, nil)
+	err := run(t.Context(), []string{"-config", env.path}, &out, io.Discard, testGetenv, nil)
 	if err == nil || !strings.Contains(err.Error(), "Redis") {
 		t.Fatalf("err = %v, want Redis connection error", err)
 	}
@@ -865,7 +923,7 @@ func TestRunFailsWhenPortTaken(t *testing.T) {
 	defer func() { _ = ln.Close() }()
 
 	var out syncBuffer
-	err = run(t.Context(), []string{"-config", env.path}, &out, testGetenv, nil)
+	err = run(t.Context(), []string{"-config", env.path}, &out, io.Discard, testGetenv, nil)
 	if err == nil || !strings.Contains(err.Error(), "listening on") {
 		t.Fatalf("err = %v, want listen error", err)
 	}
