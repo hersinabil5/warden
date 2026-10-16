@@ -52,7 +52,7 @@ type Authenticator interface {
 // MainAuthenticator finds the auth host's main session for a request; nil
 // without error means none.
 type MainAuthenticator interface {
-	MainSession(r *http.Request) (*session.Session, error)
+	MainSession(r *http.Request, requestID string) (*session.Session, error)
 }
 
 // AdminRoute serves the admin endpoints on the auth host. Like a route, every
@@ -381,7 +381,7 @@ func (h *Handler) route(w http.ResponseWriter, r *http.Request, host, id string,
 // admin policy (default deny), audit. Failures are JSON errors.
 func (h *Handler) serveAdmin(w http.ResponseWriter, r *http.Request, id string, ae *auditState) {
 	ae.on = true
-	sess, err := h.admin.Sessions.MainSession(r)
+	sess, err := h.admin.Sessions.MainSession(r, id)
 	if err != nil {
 		h.logger.Error("loading admin session", "request_id", id, "err", err)
 		ae.deny("", "session store error")

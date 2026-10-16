@@ -37,6 +37,8 @@ func authConfig(issuer string, algs ...string) config.Auth {
 		ClientSecret: config.NewSecret(testSecret),
 		Scopes:       []string{"openid"},
 		IDTokenAlgs:  algs,
+		// Long enough that no test refreshes unless it shortens it.
+		GroupRefreshInterval: 5 * time.Minute,
 	}
 }
 

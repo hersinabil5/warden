@@ -23,7 +23,7 @@ type mainAs struct {
 	err error
 }
 
-func (m mainAs) MainSession(*http.Request) (*session.Session, error) { return m.s, m.err }
+func (m mainAs) MainSession(*http.Request, string) (*session.Session, error) { return m.s, m.err }
 
 // adminSpy records what reached the admin handler.
 type adminSpy struct{ got []*http.Request }

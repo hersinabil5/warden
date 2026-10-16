@@ -17,7 +17,7 @@ auth:
   scopes: [openid, email, profile]
   id_token_algs: [RS256]                   # pinned ID token algs (Keycloak default); none/HS* are rejected
   groups_claim: groups
-  group_refresh_interval: 5m
+  group_refresh_interval: 5m             # groups older than this are re-checked with the IdP; a failed refresh revokes the session
   logout_at_idp: true                      # also end the Keycloak session on logout (needs end_session_endpoint)
 
 session:

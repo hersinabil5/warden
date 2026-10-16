@@ -548,3 +548,34 @@ most powerful thing Warden serves, so it must be at least as well guarded as any
 **Consequences:** Every admin API call is itself an audit event, including the dashboard's reads.
 A restart empties the recent-decisions buffer. Sessions created before this change have no CSRF
 token and can't mutate until the admin signs in again.
+
+## D23: Group refresh and revocation on refresh failure
+
+**Context:** Groups come from the ID token at login. Without a refresh, removing a user from a
+group (or disabling them) at the IdP wouldn't take effect until their session expired, up to 8h.
+
+**Decision:**
+- **On request, not in the background.** When a session's groups are older than
+  `auth.group_refresh_interval`, the next request that uses it (app host or admin API) redeems the
+  refresh token before policy runs. An idle session isn't refreshed, but it can't access anything
+  until it is, so the guarantee is the same: no access on groups older than the interval (plus
+  the one-refresh window below).
+- **Validated like a login:** an `id_token` is required in the refresh response and goes through
+  the same verifier (signature with pinned algorithms, `iss`, `aud`, `exp`), plus `iat` not in the
+  future, `azp`, and the same `sub` as the session. OIDC Core 12.2 says a refreshed ID token
+  shouldn't carry a nonce, so one isn't required, but if present it must equal the login's nonce
+  (stored in the session). Groups, verified email, username, `amr`, and `auth_time` are replaced; a
+  rotated refresh token is stored.
+- **Any failure revokes the session:** `invalid_grant` (user disabled, IdP session ended), IdP
+  errors, network errors, or an invalid token. The request becomes unauthenticated (login
+  redirect or 401). This is deliberately strict: an IdP outage logs users out at their next
+  refresh rather than letting stale groups through.
+- **One refresh at a time per session:** a Redis lock (30s, longer than the IdP client timeout).
+  The holder re-reads the session under the lock, so a request that waited never spends a refresh
+  token that another request already rotated (which the IdP would refuse, wrongly revoking a
+  healthy session). Requests that don't get the lock proceed on the current groups.
+- The session update uses `SET XX`, so a refresh racing a revocation can't bring the session back.
+
+**Consequences:** Every `group_refresh_interval` an active session costs one IdP round trip on
+one request. Sessions created before this change have no stored nonce; a refreshed token that
+carries a nonce then fails the check and the user signs in again.

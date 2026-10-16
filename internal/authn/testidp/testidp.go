@@ -56,6 +56,8 @@ type IdP struct {
 	tokenHits     int
 	lastAuthorize url.Values
 	clientSecret  string
+	refreshTokens map[string]string // live refresh token -> login nonce
+	refreshHits   int
 }
 
 // authRequest is what /auth recorded for an issued code.
@@ -70,7 +72,7 @@ func New(t testing.TB) *IdP {
 	if err != nil {
 		t.Fatal(err)
 	}
-	idp := &IdP{Key: key, codes: map[string]authRequest{}, clientSecret: ClientSecret}
+	idp := &IdP{Key: key, codes: map[string]authRequest{}, clientSecret: ClientSecret, refreshTokens: map[string]string{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /auth", idp.serveAuthorize)
 	mux.HandleFunc("POST /token", idp.serveToken)
@@ -333,7 +335,12 @@ func (idp *IdP) serveToken(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, http.StatusUnauthorized, "invalid_client")
 		return
 	}
-	if r.PostForm.Get("grant_type") != "authorization_code" {
+	switch r.PostForm.Get("grant_type") {
+	case "authorization_code":
+	case "refresh_token":
+		idp.serveRefresh(w, r)
+		return
+	default:
 		oauthError(w, http.StatusBadRequest, "unsupported_grant_type")
 		return
 	}
@@ -354,14 +361,52 @@ func (idp *IdP) serveToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	idp.issue(w, req.nonce, userClaims, edit, sign)
+}
+
+// serveRefresh implements the refresh_token grant with rotation: the old
+// refresh token dies, and the new ID token carries the current user claims
+// (so tests can change groups) and the login's nonce.
+func (idp *IdP) serveRefresh(w http.ResponseWriter, r *http.Request) {
+	idp.mu.Lock()
+	idp.refreshHits++
+	rt := r.PostForm.Get("refresh_token")
+	nonce, ok := idp.refreshTokens[rt]
+	delete(idp.refreshTokens, rt)
+	userClaims, edit, sign := idp.userClaims, idp.editIDToken, idp.signIDToken
+	idp.mu.Unlock()
+	if !ok {
+		oauthError(w, http.StatusBadRequest, "invalid_grant")
+		return
+	}
+	idp.issue(w, nonce, userClaims, edit, sign)
+}
+
+// RevokeRefreshTokens invalidates every issued refresh token, as when the
+// user is disabled or their IdP session ends.
+func (idp *IdP) RevokeRefreshTokens() {
+	idp.mu.Lock()
+	defer idp.mu.Unlock()
+	idp.refreshTokens = map[string]string{}
+}
+
+// RefreshHits counts refresh_token grant requests.
+func (idp *IdP) RefreshHits() int {
+	idp.mu.Lock()
+	defer idp.mu.Unlock()
+	return idp.refreshHits
+}
+
+func (idp *IdP) issue(w http.ResponseWriter, nonce string, userClaims func() map[string]any,
+	edit func(map[string]any), sign func(map[string]any) string) {
 	claims := idp.Claims()
 	if userClaims != nil {
 		for k, v := range userClaims() {
 			claims[k] = v
 		}
 	}
-	claims["nonce"] = req.nonce
-	if req.nonce == "" {
+	claims["nonce"] = nonce
+	if nonce == "" {
 		delete(claims, "nonce")
 	}
 	if edit != nil {
@@ -377,13 +422,17 @@ func (idp *IdP) serveToken(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	refresh := "rt-" + rand.Text()
+	idp.mu.Lock()
+	idp.refreshTokens[refresh] = nonce
+	idp.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"access_token":  "at-" + rand.Text(),
 		"token_type":    "Bearer",
 		"expires_in":    300,
-		"refresh_token": "rt-" + rand.Text(),
+		"refresh_token": refresh,
 		"id_token":      idToken,
 	})
 }

@@ -46,6 +46,12 @@ type Session struct {
 	CSRFToken string    `json:"csrf_token"`
 	Created   time.Time `json:"created"`
 	LastSeen  time.Time `json:"last_seen"`
+	// Refreshed is when groups were last confirmed with the IdP (login or
+	// refresh, docs/DECISIONS.md D23).
+	Refreshed time.Time `json:"refreshed"`
+	// Nonce is the login's OIDC nonce, which a refreshed ID token must
+	// repeat if it carries one (OIDC Core 12.2).
+	Nonce string `json:"nonce"`
 	// Hash is the main session's HashID, set on lookup for audit
 	// correlation. It is the storage key, so it is never stored itself.
 	Hash string `json:"-"`
@@ -149,6 +155,9 @@ func (s *Store) Create(ctx context.Context, sess Session) (string, error) {
 	}
 	now := s.now()
 	sess.Created, sess.LastSeen = now, now
+	if sess.Refreshed.IsZero() {
+		sess.Refreshed = now
+	}
 	id, err := NewID()
 	if err != nil {
 		return "", err
@@ -172,6 +181,15 @@ func (s *Store) Create(ctx context.Context, sess Session) (string, error) {
 // Get returns the live main session for id and records activity.
 func (s *Store) Get(ctx context.Context, id string) (*Session, error) {
 	return s.getMain(ctx, HashID(id))
+}
+
+// GetByHash returns the live main session stored under hash and records
+// activity, like Get.
+func (s *Store) GetByHash(ctx context.Context, hash string) (*Session, error) {
+	if !validHash(hash) {
+		return nil, ErrNotFound
+	}
+	return s.getMain(ctx, hash)
 }
 
 // CreateApp creates an app-host session pointing at a live main session.
@@ -341,6 +359,46 @@ func (s *Store) MarkUsed(ctx context.Context, ns, token string, ttl time.Duratio
 		return false, fmt.Errorf("session store: %w", err)
 	}
 	return first, nil
+}
+
+// Update rewrites a live main session's identity (after a group refresh):
+// everything but Subject, Created, LastSeen, and CSRFToken, which stay as
+// stored. It never recreates a revoked session (SET XX).
+func (s *Store) Update(ctx context.Context, sess Session) error {
+	if !validHash(sess.Hash) {
+		return ErrNotFound
+	}
+	rec, err := s.load(ctx, sess.Hash)
+	if err != nil {
+		return err
+	}
+	if rec.Kind != kindMain || rec.Session == nil {
+		return ErrNotFound
+	}
+	stored := rec.Session
+	if sess.Subject != stored.Subject {
+		return errors.New("session store: update would change the subject")
+	}
+	sess.Created, sess.LastSeen, sess.CSRFToken = stored.Created, stored.LastSeen, stored.CSRFToken
+	return s.write(ctx, sess.Hash, record{Kind: kindMain, Session: &sess}, s.ttl(&sess, s.now()), true)
+}
+
+func lockKey(name string) string { return keyPrefix + "lock:" + name }
+
+// TryLock takes a named lock for at most ttl and reports whether it got it.
+// It is advisory: it keeps concurrent requests from doing the same work.
+func (s *Store) TryLock(ctx context.Context, name string, ttl time.Duration) (bool, error) {
+	ok, err := s.rdb.SetNX(ctx, lockKey(name), "1", ttl).Result()
+	if err != nil {
+		return false, fmt.Errorf("session store: %w", err)
+	}
+	return ok, nil
+}
+
+// Unlock releases a lock taken with TryLock. A failure only delays the next
+// holder until the lock expires.
+func (s *Store) Unlock(ctx context.Context, name string) {
+	_ = s.rdb.Del(ctx, lockKey(name)).Err()
 }
 
 // DeleteApp removes one app session. Unknown IDs, and IDs that are not app

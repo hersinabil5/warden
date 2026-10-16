@@ -63,10 +63,13 @@ func validToken(v string) bool {
 func (h *Handler) Authenticate(w http.ResponseWriter, r *http.Request, host string) (*session.Session, bool) {
 	if c, err := r.Cookie(h.cookieName); err == nil && c.Value != "" {
 		sess, gerr := h.sessions.GetApp(r.Context(), c.Value, host)
+		if gerr == nil {
+			sess, gerr = h.fresh(r.Context(), sess, requestID(w))
+		}
 		switch {
 		case gerr == nil:
 			return sess, true
-		case errors.Is(gerr, session.ErrNotFound):
+		case errors.Is(gerr, session.ErrNotFound), errors.Is(gerr, errRevoked):
 			session.ClearCookie(w, h.cookieName)
 		default:
 			h.fail(w, r, "loading app session", gerr)
@@ -226,14 +229,17 @@ func requestHost(r *http.Request) string {
 
 // MainSession returns the signed-in main session behind the auth host
 // cookie on r, or nil when there is none. Only the proxy calls it, for the
-// admin endpoints on the auth host.
-func (h *Handler) MainSession(r *http.Request) (*session.Session, error) {
+// admin endpoints on the auth host; reqID is Warden's request ID, for logs.
+func (h *Handler) MainSession(r *http.Request, reqID string) (*session.Session, error) {
 	c, err := r.Cookie(h.cookieName)
 	if err != nil || c.Value == "" {
 		return nil, nil //nolint:nilnil // no cookie is not an error
 	}
 	sess, err := h.sessions.Get(r.Context(), c.Value)
-	if errors.Is(err, session.ErrNotFound) {
+	if err == nil {
+		sess, err = h.fresh(r.Context(), sess, reqID)
+	}
+	if errors.Is(err, session.ErrNotFound) || errors.Is(err, errRevoked) {
 		return nil, nil //nolint:nilnil // a dead session is not an error
 	}
 	return sess, err

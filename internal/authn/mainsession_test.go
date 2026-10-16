@@ -21,7 +21,7 @@ func TestMainSession(t *testing.T) {
 		}
 		return req
 	}
-	s, err := e.h.MainSession(get(mainCookie))
+	s, err := e.h.MainSession(get(mainCookie), "req-1")
 	if err != nil || s == nil || s.Username != "alice" || s.Hash == "" {
 		t.Fatalf("main cookie: %+v, %v", s, err)
 	}
@@ -30,18 +30,18 @@ func TestMainSession(t *testing.T) {
 		"app cookie": get(appCookie),
 		"garbage":    get(&http.Cookie{Name: sessionCookie, Value: "x"}), //nolint:gosec // G124: request cookie; attributes are not sent by clients
 	} {
-		if s, err := e.h.MainSession(req); s != nil || err != nil {
+		if s, err := e.h.MainSession(req, "req-1"); s != nil || err != nil {
 			t.Errorf("%s: %+v, %v; want no session", name, s, err)
 		}
 	}
 	if err := e.sessions.Delete(t.Context(), mainCookie.Value); err != nil {
 		t.Fatal(err)
 	}
-	if s, err := e.h.MainSession(get(mainCookie)); s != nil || err != nil {
+	if s, err := e.h.MainSession(get(mainCookie), "req-1"); s != nil || err != nil {
 		t.Errorf("revoked: %+v, %v", s, err)
 	}
 	e.mr.Close()
-	if _, err := e.h.MainSession(get(mainCookie)); err == nil {
+	if _, err := e.h.MainSession(get(mainCookie), "req-1"); err == nil {
 		t.Error("Redis down: no error")
 	}
 }

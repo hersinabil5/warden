@@ -925,6 +925,42 @@ func TestRunAdminRevokesUser(t *testing.T) {
 	}
 }
 
+// PLAN.md M5 acceptance: removing alice from sre at the IdP blocks her from
+// an sre-only route within the refresh interval; disabling her ends the
+// session.
+func TestRunGroupRefreshRevokesAccess(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "grafana")
+	}))
+	defer upstream.Close()
+	idp := testidp.New(t)
+	idp.SetClientSecret(testSecret)
+	cfg := strings.Replace(minimalConfig, "http://127.0.0.1:9001", upstream.URL, 1)
+	cfg = strings.Replace(cfg, "        - authenticated: true", "        - groups: [sre]", 1)
+	cfg = strings.Replace(cfg, "group_refresh_interval: 5m", "group_refresh_interval: 1s", 1)
+	env := newTestEnvWithIdP(t, cfg, idp)
+	startRun(t, "-config", env.path)
+	_, port := splitPort(t, env.httpsAddr)
+	app := "https://app.example.test:" + port + "/"
+
+	idp.SetUser(func() map[string]any { return map[string]any{"groups": []string{"sre"}} })
+	b := browserFor(t, env)
+	if final, hops := browse(t, b, app); final.StatusCode != http.StatusOK {
+		t.Fatalf("login = %d\n%s", final.StatusCode, strings.Join(hops, "\n"))
+	}
+	idp.SetUser(func() map[string]any { return map[string]any{"groups": []string{"dev"}} })
+	time.Sleep(1100 * time.Millisecond)
+	if r := get(t, b, app); r.StatusCode != http.StatusForbidden {
+		t.Fatalf("after removal from sre = %d, want 403", r.StatusCode)
+	}
+	idp.RevokeRefreshTokens() // user disabled
+	time.Sleep(1100 * time.Millisecond)
+	r := get(t, b, app)
+	if r.StatusCode != http.StatusFound || !strings.Contains(r.Header.Get("Location"), "/.warden/login?") {
+		t.Errorf("after disabling = %d %q, want a login redirect", r.StatusCode, r.Header.Get("Location"))
+	}
+}
+
 // Warden refuses to run unaudited.
 func TestRunFailsOnUnwritableAuditFile(t *testing.T) {
 	blocker := filepath.Join(t.TempDir(), "file")

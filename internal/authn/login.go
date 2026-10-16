@@ -44,9 +44,12 @@ type Handler struct {
 	sessions    *session.Store
 	cookieName  string
 	groupsClaim string
-	returns     *returnURLs
-	authDomain  string
-	port        string
+	// refreshInterval is how long groups are trusted before the next
+	// refresh with the IdP.
+	refreshInterval time.Duration
+	returns         *returnURLs
+	authDomain      string
+	port            string
 	// idpLogoutURL is set when auth.logout_at_idp is on.
 	idpLogoutURL string
 	// formAction is the CSP form-action for pages with the logout form.
@@ -65,6 +68,9 @@ func NewHandler(cfg *config.Config, p *Provider, opts HandlerOptions) (*Handler,
 	}
 	if opts.Sessions == nil {
 		return nil, errors.New("authn: session store is required")
+	}
+	if cfg.Auth.GroupRefreshInterval <= 0 {
+		return nil, errors.New("authn: group refresh interval must be positive")
 	}
 	if opts.Now == nil {
 		opts.Now = time.Now
@@ -101,17 +107,18 @@ func NewHandler(cfg *config.Config, p *Provider, opts HandlerOptions) (*Handler,
 			RedirectURL:  origin(cfg.Auth.Domain, port) + CallbackPath,
 			Scopes:       cfg.Auth.Scopes,
 		},
-		provider:    p,
-		sessions:    opts.Sessions,
-		cookieName:  cfg.Session.CookieName,
-		groupsClaim: cfg.Auth.GroupsClaim,
-		returns:     newReturnURLs(hosts, port),
-		authDomain:  cfg.Auth.Domain,
-		port:        port,
-		sealer:      sealer,
-		logger:      opts.Logger,
-		errorPage:   opts.ErrorPage,
-		now:         opts.Now,
+		provider:        p,
+		sessions:        opts.Sessions,
+		cookieName:      cfg.Session.CookieName,
+		groupsClaim:     cfg.Auth.GroupsClaim,
+		refreshInterval: cfg.Auth.GroupRefreshInterval,
+		returns:         newReturnURLs(hosts, port),
+		authDomain:      cfg.Auth.Domain,
+		port:            port,
+		sealer:          sealer,
+		logger:          opts.Logger,
+		errorPage:       opts.ErrorPage,
+		now:             opts.Now,
 	}
 	h.formAction = "'self'"
 	if cfg.Auth.LogoutAtIdP {
