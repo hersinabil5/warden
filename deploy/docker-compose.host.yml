@@ -1,0 +1,14 @@
+# Opt-in override for running Warden on the host (make run) against the
+# containers: re-publishes the apps and Redis on 127.0.0.1 and leaves the
+# warden container out (make dev-up-host). This deliberately undoes the
+# isolation the default stack enforces; use it for fast Go iteration only.
+services:
+  redis:
+    networks: [apps, edge]
+    ports: ["127.0.0.1:6379:6379"]
+  whoami:
+    networks: [apps, edge]
+    ports: ["127.0.0.1:9001:80"]
+  grafana:
+    networks: [apps, edge]
+    ports: ["127.0.0.1:9002:3000"]

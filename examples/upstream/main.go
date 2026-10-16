@@ -36,8 +36,11 @@ type options struct {
 	header     string
 	jwksURL    string
 	jwksCA     string
-	issuer     string
-	audience   string
+	// loopbackLocalhost dials *.localhost at 127.0.0.1 (host runs); off in
+	// the container stack, where Docker's DNS resolves those names (D25).
+	loopbackLocalhost bool
+	issuer            string
+	audience          string
 }
 
 func main() {
@@ -61,6 +64,7 @@ func parseFlags(args []string) (options, error) {
 	fs.StringVar(&o.header, "header", "X-Warden-Identity", "assertion header")
 	fs.StringVar(&o.jwksURL, "jwks", "https://auth.warden.localhost:8443/.well-known/jwks.json", "Warden's JWKS URL")
 	fs.StringVar(&o.jwksCA, "jwks-ca", "", "CA file for the JWKS URL's TLS certificate (default: system roots)")
+	fs.BoolVar(&o.loopbackLocalhost, "loopback-localhost", true, "dial *.localhost names at 127.0.0.1 (turn off inside Docker)")
 	fs.StringVar(&o.issuer, "issuer", "https://auth.warden.localhost:8443", "expected assertion issuer")
 	fs.StringVar(&o.audience, "audience", "app.warden.localhost", "this app's route host (expected aud)")
 	if err := fs.Parse(args); err != nil {
@@ -85,7 +89,7 @@ func run(ctx context.Context, args []string, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("client CA: %w", err)
 	}
-	jwksClient, err := newJWKSClient(o.jwksCA)
+	jwksClient, err := newJWKSClient(o.jwksCA, o.loopbackLocalhost)
 	if err != nil {
 		return err
 	}
@@ -149,7 +153,7 @@ func loadPool(path string) (*x509.CertPool, error) {
 	return pool, nil
 }
 
-func newJWKSClient(caFile string) (*http.Client, error) {
+func newJWKSClient(caFile string, loopbackLocalhost bool) (*http.Client, error) {
 	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
 	if caFile != "" {
 		pool, err := loadPool(caFile)
@@ -164,7 +168,10 @@ func newJWKSClient(caFile string) (*http.Client, error) {
 		Transport: &http.Transport{
 			Proxy: nil,
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				return dialer.DialContext(ctx, network, localhostAddr(addr))
+				if loopbackLocalhost {
+					addr = localhostAddr(addr)
+				}
+				return dialer.DialContext(ctx, network, addr)
 			},
 			TLSClientConfig:     tlsCfg,
 			TLSHandshakeTimeout: 5 * time.Second,

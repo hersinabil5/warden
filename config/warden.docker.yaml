@@ -1,0 +1,74 @@
+# Config for the container stack (deploy/docker-compose.yml, D25). Paths are
+# inside the container; the apps are addressed by their compose service names.
+# For running Warden on the host, use warden.example.yaml instead.
+
+listen: "0.0.0.0:8443"                    # published on 127.0.0.1 by compose
+http_redirect_listen: "0.0.0.0:8080"
+
+tls:
+  cert_file: /certs/warden.pem
+  key_file: /certs/warden-key.pem
+
+auth:
+  domain: auth.warden.localhost
+  # Same URL for the browser (published port) and Warden (network alias).
+  issuer: http://keycloak.localhost:8180/realms/warden
+  client_id: warden-proxy
+  client_secret_env: WARDEN_CLIENT_SECRET
+  scopes: [openid, email, profile]
+  id_token_algs: [RS256]
+  groups_claim: groups
+  group_refresh_interval: 5m
+  logout_at_idp: true
+
+session:
+  redis_addr: redis:6379
+  cookie_name: _warden
+  absolute_ttl: 8h
+  idle_timeout: 1h
+
+identity:
+  header: X-Warden-Identity
+  signing_key_file: /certs/identity-signing-key.pem
+  previous_key_files: []
+  ttl: 60s
+
+strip_headers:
+  - X-Remote-User
+
+audit:
+  sink: file
+  file: /var/lib/warden/audit.jsonl     # ./var/audit.jsonl on the host
+
+admin:
+  allow:
+    - groups: [admins]
+      require_mfa_within: 12h
+
+routes:
+  - host: whoami.warden.localhost
+    upstream: http://whoami:80
+    policy:
+      allow:
+        - authenticated: true
+
+  - host: grafana.warden.localhost
+    upstream: http://grafana:3000
+    policy:
+      allow:
+        - groups: [sre, admins]
+      paths:
+        - prefix: /admin
+          allow:
+            - groups: [admins]
+              require_mfa_within: 10m
+
+  - host: app.warden.localhost
+    upstream: https://example-upstream.localhost:9003
+    upstream_tls:
+      ca_file: /certs/internal-ca.pem
+      client_cert_file: /certs/warden-client.pem
+      client_key_file: /certs/warden-client-key.pem
+    policy:
+      allow:
+        - email_domains: [warden.local]

@@ -1,10 +1,50 @@
-# Dev stack. All ports bind to 127.0.0.1 only.
-# Images are pinned to a version and a multi-arch digest so a fresh clone gets
-# exactly the same images. Bump both together.
-# `make dev-up` waits on the healthchecks; whoami has none (scratch image, no shell).
+# Dev stack: everything in containers (docs/DECISIONS.md D25).
+#   make dev-up     build and start, wait until healthy
+#   make dev-check  verify the isolation guarantees
+# Only Warden (8443, 8080) and Keycloak (8180) are published, on 127.0.0.1.
+# The apps and Redis sit on an internal network: reachable only through
+# Warden. Images are pinned to a version and a multi-arch digest; bump both.
 name: warden-dev
 
+networks:
+  # Published services, and Warden's route to Keycloak.
+  edge: {}
+  # No published ports, no route to the outside: apps and Redis.
+  apps:
+    internal: true
+
 services:
+  warden:
+    build:
+      context: ..
+      target: warden
+    image: warden:dev
+    command: ["-config", "/config/warden.docker.yaml"]
+    # Run as the host user so the bind-mounted keys (0600) stay readable
+    # without loosening their permissions. The Makefile sets these.
+    user: "${WARDEN_UID:-65532}:${WARDEN_GID:-65532}"
+    environment:
+      WARDEN_CLIENT_SECRET: ${WARDEN_CLIENT_SECRET:?set WARDEN_CLIENT_SECRET in .env}
+    ports:
+      - "127.0.0.1:8443:8443"
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ../config/warden.docker.yaml:/config/warden.docker.yaml:ro
+      - ./certs:/certs:ro
+      - ../var:/var/lib/warden
+    networks:
+      edge: {}
+      apps:
+        # The example upstream fetches the JWKS from this name.
+        aliases: [auth.warden.localhost]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    depends_on:
+      keycloak: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
   keycloak:
     image: quay.io/keycloak/keycloak:26.8.0@sha256:27b3230fbabb8c9ff3c66c864cf09dcd8a41aca82e5100679d109ef0eeb05741
     command: ["start-dev", "--import-realm"]
@@ -12,10 +52,17 @@ services:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
       KC_BOOTSTRAP_ADMIN_PASSWORD: admin
       KC_HEALTH_ENABLED: "true"
+      # Same port inside and out, so http://keycloak.localhost:8180 is one
+      # issuer for the browser and for Warden (D25).
+      KC_HTTP_PORT: "8180"
     ports:
-      - "127.0.0.1:8180:8080"
+      - "127.0.0.1:8180:8180"
     volumes:
       - ./keycloak:/opt/keycloak/data/import:ro
+    networks:
+      edge:
+        aliases: [keycloak.localhost]
+    restart: unless-stopped
     healthcheck:
       # The image has no curl/wget; probe the management port with bash.
       test:
@@ -31,8 +78,8 @@ services:
 
   redis:
     image: redis:8.10.2-alpine@sha256:3811787313eba226a2ef38658c6ccb91cd5e110edc89c37767de373120a0e5a0
-    ports:
-      - "127.0.0.1:6379:6379"
+    networks: [apps]
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -41,19 +88,43 @@ services:
 
   whoami:
     image: traefik/whoami:v1.12.0@sha256:c4717a8d1f0134a7444e24f881160e033991f23027c6c5a9a3f8fd22e70d1d44
-    ports:
-      - "127.0.0.1:9001:80"
+    networks: [apps]
+    restart: unless-stopped
 
   grafana:
     image: grafana/grafana-oss:13.0.2@sha256:5dad0df181cb644a14e13617b913b261a54f7d4fd4510721dba420929f35bea2
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
-    ports:
-      - "127.0.0.1:9002:3000"
+    networks: [apps]
+    restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/api/health"]
       interval: 5s
       timeout: 3s
       retries: 20
       start_period: 15s
+
+  example-upstream:
+    build:
+      context: ..
+      target: example-upstream
+    image: warden-example-upstream:dev
+    command:
+      - -listen=:9003
+      - -cert=/certs/upstream.pem
+      - -key=/certs/upstream-key.pem
+      - -client-ca=/certs/internal-ca.pem
+      - -jwks=https://auth.warden.localhost:8443/.well-known/jwks.json
+      - -jwks-ca=/certs/mkcert-root.pem
+      - -loopback-localhost=false
+    user: "${WARDEN_UID:-65532}:${WARDEN_GID:-65532}"
+    volumes:
+      - ./certs:/certs:ro
+    networks:
+      apps:
+        aliases: [example-upstream.localhost]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped

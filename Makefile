@@ -1,13 +1,39 @@
-.PHONY: dev-up dev-down certs internal-ca run upstream build web test lint fuzz
+.PHONY: dev-up dev-down dev-up-host dev-logs dev-check certs internal-ca run upstream build web test lint fuzz
 
 -include .env
 export
 
-dev-up:
-	docker compose -f deploy/docker-compose.yml up -d --wait --wait-timeout 180
+# --env-file: compose would otherwise look for .env next to the compose file.
+COMPOSE := docker compose --env-file .env -f deploy/docker-compose.yml
+# Containers run as you, so the bind-mounted keys keep 0600 (D25).
+export WARDEN_UID := $(shell id -u)
+export WARDEN_GID := $(shell id -g)
+MKCERT_ROOT := deploy/certs/mkcert-root.pem
+
+# Everything in containers, Warden included; apps reachable only through it.
+dev-up: $(MKCERT_ROOT)
+	mkdir -p var
+	$(COMPOSE) up -d --build --wait --wait-timeout 300
 
 dev-down:
-	docker compose -f deploy/docker-compose.yml down
+	$(COMPOSE) down
+
+dev-logs:
+	$(COMPOSE) logs -f warden
+
+# Checks the running stack: Warden answers, the apps are unreachable except
+# through it, nothing runs as root.
+dev-check:
+	./scripts/dev-check.sh
+
+# For `make run`: the backing services only, with the apps published again.
+dev-up-host:
+	$(COMPOSE) -f deploy/docker-compose.host.yml up -d --wait --wait-timeout 300 keycloak redis whoami grafana
+
+# The example upstream container fetches Warden's JWKS over TLS, so it needs
+# the mkcert root that signed Warden's dev certificate.
+$(MKCERT_ROOT):
+	cp "$$(mkcert -CAROOT)/rootCA.pem" $@
 
 DEV_CONFIG := config/warden.dev.yaml
 SIGNING_KEY := deploy/certs/identity-signing-key.pem

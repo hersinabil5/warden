@@ -273,14 +273,19 @@ func checkEndpoint(raw string) error {
 		return errors.New("must not contain credentials")
 	case u.Fragment != "" || strings.Contains(raw, "#"):
 		return fmt.Errorf("%q must not have a fragment", raw)
-	case u.Scheme == "http" && !isLoopback(u.Hostname()):
-		return fmt.Errorf("%q must use https (plain http is allowed only for localhost)", raw)
+	case u.Scheme == "http" && !isLocalHost(u.Hostname()):
+		return fmt.Errorf("%q must use https (plain http is allowed only for localhost names)", raw)
 	}
 	return nil
 }
 
-func isLoopback(host string) bool {
-	if host == "localhost" {
+// isLocalHost reports whether host can only ever name this machine or a
+// local network peer: localhost, a *.localhost name (RFC 6761 reserves them;
+// the container stack uses keycloak.localhost, D25), or a loopback IP. Plain
+// http is tolerated only for these.
+func isLocalHost(host string) bool {
+	h := strings.ToLower(host)
+	if h == "localhost" || (strings.HasSuffix(h, ".localhost") && len(h) > len(".localhost")) {
 		return true
 	}
 	ip := net.ParseIP(host)

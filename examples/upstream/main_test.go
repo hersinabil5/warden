@@ -187,8 +187,11 @@ func TestServerRequiresWardenClientCert(t *testing.T) {
 
 func TestParseFlags(t *testing.T) {
 	o, err := parseFlags(nil)
-	if err != nil || o.listen != "127.0.0.1:9003" || o.audience != "app.warden.localhost" {
+	if err != nil || o.listen != "127.0.0.1:9003" || o.audience != "app.warden.localhost" || !o.loopbackLocalhost {
 		t.Errorf("defaults: %+v, %v", o, err)
+	}
+	if o, _ := parseFlags([]string{"-loopback-localhost=false"}); o.loopbackLocalhost {
+		t.Error("-loopback-localhost=false ignored")
 	}
 	if _, err := parseFlags([]string{"extra"}); err == nil {
 		t.Error("positional argument accepted")
@@ -207,6 +210,36 @@ func TestLocalhostAddr(t *testing.T) {
 	} {
 		if got := localhostAddr(in); got != want {
 			t.Errorf("localhostAddr(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// The loopback mapping is what lets the host-run example reach
+// auth.warden.localhost; in the container stack it is off, so the name goes
+// to DNS (Docker's) instead.
+func TestJWKSClientLoopbackMapping(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) }))
+	defer srv.Close()
+	_, port, _ := net.SplitHostPort(strings.TrimPrefix(srv.URL, "http://"))
+	target := "http://warden-test-nonexistent.localhost:" + port + "/"
+	// Some resolvers (systemd-resolved) map *.localhost to loopback
+	// themselves; there the unmapped case can't be told apart.
+	_, lookupErr := net.DefaultResolver.LookupHost(t.Context(), "warden-test-nonexistent.localhost")
+	for _, mapping := range []bool{true, false} {
+		if !mapping && lookupErr == nil {
+			continue
+		}
+		c, err := newJWKSClient("", mapping)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, target, nil)
+		resp, err := c.Do(req)
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		if reached := err == nil && resp.StatusCode == http.StatusTeapot; reached != mapping {
+			t.Errorf("mapping=%v: reached loopback = %v (err %v)", mapping, reached, err)
 		}
 	}
 }

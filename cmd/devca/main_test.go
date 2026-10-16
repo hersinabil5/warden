@@ -51,7 +51,7 @@ func TestIssuesUsableChain(t *testing.T) {
 	if _, err := client.Verify(x509.VerifyOptions{Roots: roots, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}); err != nil {
 		t.Errorf("client cert does not verify for client auth: %v", err)
 	}
-	for _, name := range []string{"127.0.0.1", "localhost", "::1"} {
+	for _, name := range []string{"127.0.0.1", "localhost", "::1", UpstreamDockerName} {
 		if _, err := server.Verify(x509.VerifyOptions{Roots: roots, DNSName: name}); err != nil {
 			t.Errorf("server cert does not verify for %s: %v", name, err)
 		}

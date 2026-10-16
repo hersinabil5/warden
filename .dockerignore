@@ -1,0 +1,17 @@
+# Keep secrets and local state out of the build context, and so out of every
+# image layer. Certificates and keys are mounted at runtime (D25).
+.git
+.env
+.env.*
+!.env.example
+deploy/certs
+config/warden.dev.yaml
+var
+bin
+*.test
+*.out
+.claude
+CLAUDE.md
+PLAN.md
+web/admin/node_modules
+web/admin/dist

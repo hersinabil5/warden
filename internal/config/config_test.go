@@ -147,6 +147,7 @@ func TestParseAllowsLocalHTTPIssuer(t *testing.T) {
 		"http://localhost:8180/realms/warden",
 		"http://127.0.0.1:8180/realms/warden",
 		"http://[::1]:8180/realms/warden",
+		"http://keycloak.localhost:8180/realms/warden", // the container setup (D25)
 	} {
 		in := edit(t, "issuer: https://idp.example.test/realms/warden", "issuer: "+issuer)
 		if _, err := Parse([]byte(in), testGetenv); err != nil {
@@ -201,6 +202,17 @@ func TestLoadExampleConfig(t *testing.T) {
 		if r.UpstreamURL == nil {
 			t.Errorf("route %s: upstream URL not parsed", r.Host)
 		}
+	}
+}
+
+// The container config (D25) must stay valid too.
+func TestLoadDockerConfig(t *testing.T) {
+	cfg, err := Load("../../config/warden.docker.yaml", func(string) string { return "example-secret" })
+	if err != nil {
+		t.Fatalf("config/warden.docker.yaml must stay valid: %v", err)
+	}
+	if cfg.Auth.Issuer != "http://keycloak.localhost:8180/realms/warden" || len(cfg.Routes) != 3 || cfg.Admin == nil {
+		t.Errorf("unexpected docker config: issuer %q, %d routes", cfg.Auth.Issuer, len(cfg.Routes))
 	}
 }
 
@@ -279,6 +291,9 @@ func TestParseRejectsInvalid(t *testing.T) {
 		{"issuer not a URL", "issuer: https://idp.example.test/realms/warden", "issuer: idp.example.test/realms", "auth.issuer"},
 		{"issuer plain http on remote host", "issuer: https://idp.example.test/realms/warden", "issuer: http://idp.example.test/realms/warden", "https"},
 		{"issuer http on localhost lookalike", "issuer: https://idp.example.test/realms/warden", "issuer: http://localhost.evil.test/realms/warden", "https"},
+		{"issuer http on .localhost lookalike", "issuer: https://idp.example.test/realms/warden", "issuer: http://keycloak.localhost.evil.test/realms/warden", "https"},
+		{"issuer http on localhost suffix without dot", "issuer: https://idp.example.test/realms/warden", "issuer: http://evillocalhost/realms/warden", "https"},
+		{"issuer http on trailing-dot localhost", "issuer: https://idp.example.test/realms/warden", "issuer: http://keycloak.localhost./realms/warden", "https"},
 		{"issuer with credentials", "issuer: https://idp.example.test/realms/warden", "issuer: https://u:p@idp.example.test/realms/warden", "auth.issuer"},
 		{"issuer with query", "issuer: https://idp.example.test/realms/warden", "issuer: https://idp.example.test/realms/warden?x=1", "auth.issuer"},
 		{"issuer with fragment", "issuer: https://idp.example.test/realms/warden", "issuer: https://idp.example.test/realms/warden#x", "auth.issuer"},
@@ -482,5 +497,18 @@ func TestSecretIsRedacted(t *testing.T) {
 	}
 	if !strings.Contains(outputs["%v"], "REDACTED") {
 		t.Errorf("%%v = %q, want a redaction marker", outputs["%v"])
+	}
+}
+
+func TestIsLocalHost(t *testing.T) {
+	for host, want := range map[string]bool{
+		"localhost": true, "127.0.0.1": true, "127.8.9.10": true, "::1": true,
+		"keycloak.localhost": true, "a.b.localhost": true, "KEYCLOAK.LOCALHOST": true,
+		"localhost.evil.test": false, "keycloak.localhost.evil.test": false, "evillocalhost": false,
+		"keycloak.localhost.": false, ".localhost": false, "": false, "10.0.0.1": false, "idp.example.test": false,
+	} {
+		if got := isLocalHost(host); got != want {
+			t.Errorf("isLocalHost(%q) = %v, want %v", host, got, want)
+		}
 	}
 }

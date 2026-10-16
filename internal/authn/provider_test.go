@@ -158,6 +158,9 @@ func TestDiscoverRejectsBadMetadata(t *testing.T) {
 		{"jwks_uri http on localhost lookalike", func(*testidp.IdP) func(map[string]any) {
 			return set("jwks_uri", "http://localhost.evil.test/jwks")
 		}, "jwks_uri"},
+		{"jwks_uri http on .localhost lookalike", func(*testidp.IdP) func(map[string]any) {
+			return set("jwks_uri", "http://keycloak.localhost.evil.test/jwks")
+		}, "jwks_uri"},
 		{"jwks_uri with credentials", func(idp *testidp.IdP) func(map[string]any) {
 			return set("jwks_uri", strings.Replace(idp.Server.URL, "http://", "http://u:p@", 1)+"/jwks")
 		}, "jwks_uri"},
@@ -556,5 +559,24 @@ func TestVerifierRejectsUnpinnedAlgorithm(t *testing.T) {
 	tok, _ := jws.CompactSerialize()
 	if _, err := p.Verifier.Verify(t.Context(), tok); err != nil {
 		t.Errorf("valid ES256 token rejected: %v", err)
+	}
+}
+
+// Plain http is allowed only for names that can never be public (RFC 6761
+// localhost names, loopback IPs), e.g. Keycloak inside the dev compose stack.
+func TestCheckEndpointLocalHTTP(t *testing.T) {
+	for raw, ok := range map[string]bool{
+		"http://localhost:8180/realms/warden/protocol/openid-connect/certs":          true,
+		"http://keycloak.localhost:8180/realms/warden/protocol/openid-connect/certs": true,
+		"http://127.0.0.1:8180/x":                true,
+		"http://keycloak.localhost.evil.test/x":  false,
+		"http://keycloaklocalhost/x":             false,
+		"http://keycloak.localhost./x":           false,
+		"http://idp.example.test/x":              false,
+		"https://keycloak.localhost.evil.test/x": true, // https anywhere is fine
+	} {
+		if err := checkEndpoint(raw); (err == nil) != ok {
+			t.Errorf("checkEndpoint(%q) = %v, want ok=%v", raw, err, ok)
+		}
 	}
 }

@@ -617,3 +617,41 @@ binary, and it must not open a weaker path to admin data than the API itself.
   responses carry `default-src 'none'; frame-ancestors 'none'` too, in case one is opened as a
   page. The dashboard sends the session's CSRF token (from `GET /api/me`) on every mutation; the
   API enforces it (D22).
+
+## D25: Container stack and the issuer URL
+
+**Context:** M7 runs Warden in Docker next to Keycloak, Redis, and the apps, with the apps
+reachable only through Warden. Warden checks that tokens come from exactly one issuer URL, but
+the browser and a container see "localhost" differently: in the browser it's your machine; in
+Warden's container it's that container.
+
+**Decision:**
+- **One URL for both: `http://keycloak.localhost:8180`.** Browsers send `*.localhost` to the
+  machine (RFC 6761), where Keycloak's port is published; inside Docker, `keycloak.localhost` is a
+  network alias for the Keycloak container, which listens on 8180 too (`KC_HTTP_PORT`). Keycloak
+  derives the issuer from the request URL, so both see the same issuer.
+- To allow that, plain `http` for the issuer and IdP endpoints is now accepted for any
+  `*.localhost` name, not just `localhost` and loopback IPs. Those names are reserved and can never
+  be public, so this doesn't open http to real hosts; lookalikes (`keycloak.localhost.evil.test`,
+  `evillocalhost`, a trailing dot) are rejected. Public deployments use https.
+- Rejected alternative: sharing Keycloak's network namespace so `localhost` matches. No rule
+  change, but it couples the containers (restarting Keycloak breaks Warden's networking).
+- **Networks:** `edge` (Warden, Keycloak; the only published ports, on 127.0.0.1) and `apps`
+  (`internal: true`: no published ports, no route out) for the apps and Redis. Warden is on both.
+  `make dev-check` verifies this on the running stack.
+- **Images:** one multi-stage `Dockerfile` (Node builds the dashboard, Go builds static binaries)
+  with `warden` and `example-upstream` targets on `distroless/static:nonroot`, all bases pinned by
+  version and digest, built natively for amd64 and arm64. `.dockerignore` keeps keys, `.env`, and
+  local state out of every layer; certificates are bind-mounted read-only at runtime.
+- **Containers** run as the host user (the Makefile passes `id -u`/`id -g`) so mounted keys keep
+  their `0600` mode, with a read-only root filesystem, all capabilities dropped,
+  `no-new-privileges`, and `restart: unless-stopped`. The audit log is `./var/audit.jsonl`.
+- The example upstream's certificate adds `example-upstream.localhost` (still inside the dev CA's
+  `localhost` name constraint), and its `-loopback-localhost=false` flag lets Docker's DNS resolve
+  `auth.warden.localhost` to Warden for the JWKS.
+- `make run` still works for fast iteration via `make dev-up-host`, an opt-in override that
+  re-publishes the apps on 127.0.0.1, deliberately undoing the isolation.
+
+**Consequences:** Keycloak sets its login cookies `Secure` even over http; browsers accept that on
+`*.localhost` (a secure context), curl does not, so scripted logins need a real browser. Recreating
+the Keycloak container resets its dev database (OTP enrollments included).

@@ -82,7 +82,7 @@ func run(args []string, out io.Writer, now time.Time) error {
 	}
 	server := &x509.Certificate{
 		Subject:     pkix.Name{CommonName: "example-upstream"},
-		DNSNames:    []string{"localhost"},
+		DNSNames:    []string{"localhost", UpstreamDockerName},
 		IPAddresses: []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback},
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
@@ -92,6 +92,10 @@ func run(args []string, out io.Writer, now time.Time) error {
 	_, _ = fmt.Fprintf(out, "issued %s and %s (valid %v)\n", clientCert, upstreamCert, leafValidity)
 	return nil
 }
+
+// UpstreamDockerName is the example upstream's name on the compose network
+// (D25). It is under localhost, so the CA's name constraint still holds.
+const UpstreamDockerName = "example-upstream.localhost"
 
 func loadOrCreateCA(dir string, now time.Time) (*x509.Certificate, *ecdsa.PrivateKey, bool, error) {
 	certPath, keyPath := filepath.Join(dir, caCert), filepath.Join(dir, caKey)
