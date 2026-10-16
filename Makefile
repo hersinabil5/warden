@@ -1,4 +1,4 @@
-.PHONY: dev-up dev-down certs internal-ca run upstream build test lint fuzz
+.PHONY: dev-up dev-down certs internal-ca run upstream build web test lint fuzz
 
 -include .env
 export
@@ -42,8 +42,13 @@ run:
 upstream:
 	go run ./examples/upstream -jwks-ca "$$(mkcert -CAROOT)/rootCA.pem"
 
-build:
+# The admin dashboard is embedded into the binary (docs/DECISIONS.md D24), so
+# build it first. npm ci installs exactly what package-lock.json pins.
+build: web
 	go build -o bin/warden ./cmd/warden
+
+web:
+	cd web/admin && npm ci --no-audit --no-fund && npm run build
 
 test:
 	go test -race ./...

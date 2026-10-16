@@ -587,7 +587,8 @@ binary, and it must not open a weaker path to admin data than the API itself.
 
 **Decision:**
 - **Build and embed:** Vite + React + TypeScript in `web/admin`, built to `web/admin/dist` and
-  embedded with `go:embed all:dist` (package `adminui`). The build output is gitignored except
+  embedded with `go:embed all:dist` (package `adminui`). `make build` runs `npm ci` (exactly the
+  lockfile), type-checks, builds, then builds `bin/warden`; `make web` does only the frontend. The build output is gitignored except
   `dist/.gitkeep`, so `go build` and `go test` work without Node; such a binary answers the
   dashboard with a "not built, run `make build`" page (503). Dependencies are pinned exactly and
   locked: `react`, `react-dom`, and, for building only, `vite`, `typescript`, `@vitejs/plugin-react`,
