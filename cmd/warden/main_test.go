@@ -759,7 +759,15 @@ func browse(t *testing.T, b *http.Client, target string) (response, []string) {
 		if resp.StatusCode != http.StatusFound {
 			return resp, hops
 		}
-		target = resp.Header.Get("Location")
+		base, err := url.Parse(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		next, err := base.Parse(resp.Header.Get("Location")) // relative, as a browser resolves it
+		if err != nil {
+			t.Fatal(err)
+		}
+		target = next.String()
 	}
 	t.Fatalf("redirect loop:\n%s", strings.Join(hops, "\n"))
 	return response{}, nil
@@ -830,6 +838,90 @@ func TestRunAuditsDecisionsToFile(t *testing.T) {
 	if sess, _ := last["session"].(string); last["decision"] != "allow" || last["rule"] != "allow[0]" ||
 		last["status"] != float64(200) || last["user"] == "" || len(sess) != 12 {
 		t.Errorf("last event = %v, want the allow", last)
+	}
+}
+
+const adminSection = `admin:
+  allow:
+    - groups: [admins]
+      require_mfa_within: 1h
+routes:`
+
+// PLAN.md M5 acceptance: revoking bob's sessions via the admin API makes his
+// next request redirect to login. Bob himself cannot use the API.
+func TestRunAdminRevokesUser(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "upstream")
+	}))
+	defer upstream.Close()
+	idp := testidp.New(t)
+	idp.SetClientSecret(testSecret)
+	cfg := strings.Replace(minimalConfig, "http://127.0.0.1:9001", upstream.URL, 1)
+	cfg = strings.Replace(cfg, "routes:", adminSection, 1)
+	env := newTestEnvWithIdP(t, cfg, idp)
+	startRun(t, "-config", env.path)
+	_, port := splitPort(t, env.httpsAddr)
+	app := "https://app.example.test:" + port + "/"
+	api := "https://auth.example.test:" + port + "/.warden/api/"
+
+	idp.SetUser(func() map[string]any {
+		return map[string]any{"sub": "sub-bob", "preferred_username": "bob", "groups": []string{"dev"}}
+	})
+	bob := browserFor(t, env)
+	if final, hops := browse(t, bob, app); final.StatusCode != http.StatusOK {
+		t.Fatalf("bob login = %d\n%s", final.StatusCode, strings.Join(hops, "\n"))
+	}
+	if r := get(t, bob, api+"sessions"); r.StatusCode != http.StatusForbidden {
+		t.Errorf("bob on the admin API = %d, want 403", r.StatusCode)
+	}
+
+	idp.SetUser(func() map[string]any {
+		return map[string]any{"sub": "sub-alice", "preferred_username": "alice", "groups": []string{"admins"},
+			"amr": []string{"pwd", "otp"}, "auth_time": time.Now().Unix()}
+	})
+	alice := browserFor(t, env)
+	if final, hops := browse(t, alice, "https://auth.example.test:"+port+"/.warden/login"); final.StatusCode != http.StatusOK {
+		t.Fatalf("alice login = %d\n%s", final.StatusCode, strings.Join(hops, "\n"))
+	}
+	me := get(t, alice, api+"me")
+	var meBody struct {
+		CSRF string `json:"csrf_token"`
+	}
+	if err := json.Unmarshal([]byte(me.Body), &meBody); err != nil || me.StatusCode != http.StatusOK || meBody.CSRF == "" {
+		t.Fatalf("me = %d %s", me.StatusCode, me.Body)
+	}
+
+	revoke := func(token string) response {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, api+"users/revoke", strings.NewReader(`{"sub":"sub-bob"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Origin", "https://auth.example.test:"+port)
+		req.Header.Set("X-CSRF-Token", token)
+		resp, err := alice.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		body, _ := io.ReadAll(resp.Body)
+		return response{resp.StatusCode, resp.Header, string(body)}
+	}
+	if r := revoke("wrong"); r.StatusCode != http.StatusForbidden {
+		t.Fatalf("revoke without the CSRF token = %d", r.StatusCode)
+	}
+	if r := get(t, bob, app); r.StatusCode != http.StatusOK {
+		t.Fatalf("bob was revoked by a refused request: %d", r.StatusCode)
+	}
+	if r := revoke(meBody.CSRF); r.StatusCode != http.StatusOK || !strings.Contains(r.Body, `"revoked":1`) {
+		t.Fatalf("revoke = %d %s", r.StatusCode, r.Body)
+	}
+	after := get(t, bob, app)
+	if after.StatusCode != http.StatusFound || !strings.Contains(after.Header.Get("Location"), "/.warden/login?") {
+		t.Errorf("bob after revocation = %d %q, want a login redirect", after.StatusCode, after.Header.Get("Location"))
+	}
+	if r := get(t, alice, api+"me"); r.StatusCode != http.StatusOK {
+		t.Errorf("alice's session was revoked too: %d", r.StatusCode)
 	}
 }
 

@@ -41,8 +41,11 @@ type Session struct {
 	AuthTime     time.Time `json:"auth_time"`
 	AMR          []string  `json:"amr"`
 	RefreshToken string    `json:"refresh_token"` // secret; never logged
-	Created      time.Time `json:"created"`
-	LastSeen     time.Time `json:"last_seen"`
+	// CSRFToken guards the admin API's mutating endpoints for this session
+	// (docs/DECISIONS.md D22). Random per session; never logged or listed.
+	CSRFToken string    `json:"csrf_token"`
+	Created   time.Time `json:"created"`
+	LastSeen  time.Time `json:"last_seen"`
 	// Hash is the main session's HashID, set on lookup for audit
 	// correlation. It is the storage key, so it is never stored itself.
 	Hash string `json:"-"`
@@ -148,6 +151,9 @@ func (s *Store) Create(ctx context.Context, sess Session) (string, error) {
 	sess.Created, sess.LastSeen = now, now
 	id, err := NewID()
 	if err != nil {
+		return "", err
+	}
+	if sess.CSRFToken, err = NewID(); err != nil {
 		return "", err
 	}
 	hash := HashID(id)

@@ -188,7 +188,7 @@ func (s *Store) peekAll(ctx context.Context, hashes []string, sub string) ([]Ses
 }
 
 // peek reads a main session without recording activity. The copy it
-// returns has no refresh token. A dead session is ErrNotFound, with the
+// returns has no refresh or CSRF token. A dead session is ErrNotFound, with the
 // session still returned when its record exists, for index cleanup.
 func (s *Store) peek(ctx context.Context, hash string) (*Session, error) {
 	rec, err := s.load(ctx, hash)
@@ -199,7 +199,7 @@ func (s *Store) peek(ctx context.Context, hash string) (*Session, error) {
 		return nil, ErrNotFound
 	}
 	sess := *rec.Session
-	sess.Hash, sess.RefreshToken = hash, ""
+	sess.Hash, sess.RefreshToken, sess.CSRFToken = hash, "", ""
 	now := s.now()
 	if !now.Before(sess.Created.Add(s.abs)) || !now.Before(sess.LastSeen.Add(s.idle)) {
 		return &sess, ErrNotFound

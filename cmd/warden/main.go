@@ -21,13 +21,18 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	"github.com/hersinabil5/warden/internal/admin"
 	"github.com/hersinabil5/warden/internal/audit"
 	"github.com/hersinabil5/warden/internal/authn"
 	"github.com/hersinabil5/warden/internal/config"
 	"github.com/hersinabil5/warden/internal/identity"
+	"github.com/hersinabil5/warden/internal/policy"
 	"github.com/hersinabil5/warden/internal/proxy"
 	"github.com/hersinabil5/warden/internal/session"
 )
+
+// recentDecisions is how many audit events the admin API can page through.
+const recentDecisions = 10000
 
 // shutdownTimeout bounds how long graceful shutdown may take before giving up.
 const shutdownTimeout = 15 * time.Second
@@ -160,6 +165,11 @@ func run(ctx context.Context, args []string, logOut, auditOut io.Writer, getenv 
 		return err
 	}
 
+	recent := audit.NewRecent(recentDecisions)
+	adminRoute, err := newAdminRoute(cfg, sessions, recent, authHandler, logger)
+	if err != nil {
+		return err
+	}
 	handler, err := proxy.New(cfg, proxy.Options{
 		Identity:      signer,
 		JWKS:          signer.JWKSHandler(),
@@ -167,7 +177,8 @@ func run(ctx context.Context, args []string, logOut, auditOut io.Writer, getenv 
 		Auth:          authHandler,
 		Authenticator: authHandler,
 		CookieNames:   authn.CookieNames(cfg.Session.CookieName),
-		Audit:         sink,
+		Audit:         audit.Multi(sink, recent),
+		Admin:         adminRoute,
 	})
 	if err != nil {
 		return err
@@ -238,6 +249,28 @@ func openAuditSink(cfg config.Audit, stdout io.Writer, logger *slog.Logger) (*au
 		return audit.NewWriterSink(stdout, logger), nil
 	}
 	return audit.OpenFileSink(cfg.File, logger)
+}
+
+// newAdminRoute builds the admin API behind the admin policy, or nil when
+// the config has no admin section.
+func newAdminRoute(cfg *config.Config, sessions *session.Store, recent *audit.Recent,
+	authHandler *authn.Handler, logger *slog.Logger) (*proxy.AdminRoute, error) {
+	if cfg.Admin == nil {
+		return nil, nil //nolint:nilnil // no admin section: no admin route
+	}
+	pol, err := policy.Compile(config.Policy{Allow: cfg.Admin.Allow})
+	if err != nil {
+		return nil, fmt.Errorf("admin policy: %w", err)
+	}
+	origin, err := authn.AuthOrigin(cfg)
+	if err != nil {
+		return nil, err
+	}
+	api, err := admin.New(admin.Options{Sessions: sessions, Decisions: recent, AuthOrigin: origin, Logger: logger})
+	if err != nil {
+		return nil, err
+	}
+	return &proxy.AdminRoute{Handler: api, Policy: pol, Sessions: authHandler}, nil
 }
 
 // newSigner loads the identity assertion keys: the active signing key and

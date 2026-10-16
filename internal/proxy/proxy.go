@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hersinabil5/warden/internal/admin"
 	"github.com/hersinabil5/warden/internal/audit"
 	"github.com/hersinabil5/warden/internal/config"
 	"github.com/hersinabil5/warden/internal/identity"
@@ -48,6 +49,21 @@ type Authenticator interface {
 	Authenticate(w http.ResponseWriter, r *http.Request, host string) (*session.Session, bool)
 }
 
+// MainAuthenticator finds the auth host's main session for a request; nil
+// without error means none.
+type MainAuthenticator interface {
+	MainSession(r *http.Request) (*session.Session, error)
+}
+
+// AdminRoute serves the admin endpoints on the auth host. Like a route, every
+// request is authenticated (with the main session), checked against Policy,
+// and audited before Handler sees it (docs/DECISIONS.md D22).
+type AdminRoute struct {
+	Handler  http.Handler
+	Policy   *policy.Policy
+	Sessions MainAuthenticator
+}
+
 // Options configures a Handler.
 type Options struct {
 	Logger *slog.Logger
@@ -70,8 +86,11 @@ type Options struct {
 	// JWKS serves the assertion keys at JWKSPath on the auth host. Nil
 	// leaves that path 404.
 	JWKS http.Handler
-	// Audit receives one event per request to a route host. Required.
+	// Audit receives one event per request to a route host or the admin
+	// endpoints. Required.
 	Audit audit.Recorder
+	// Admin serves the admin endpoints; nil leaves them 404.
+	Admin *AdminRoute
 }
 
 // Handler routes requests by Host to upstream reverse proxies.
@@ -83,6 +102,7 @@ type Handler struct {
 	identity   Asserter
 	jwks       http.Handler
 	audit      audit.Recorder
+	admin      *AdminRoute
 	now        func() time.Time
 	logger     *slog.Logger
 }
@@ -101,6 +121,9 @@ func New(cfg *config.Config, opts Options) (*Handler, error) {
 	if opts.Audit == nil {
 		return nil, errors.New("no audit recorder")
 	}
+	if a := opts.Admin; a != nil && (a.Handler == nil || a.Policy == nil || a.Sessions == nil) {
+		return nil, errors.New("admin route needs a handler, a policy, and a session lookup")
+	}
 	idHeader := cfg.Identity.Header
 	if idHeader == "" {
 		return nil, errors.New("no identity header configured")
@@ -113,6 +136,7 @@ func New(cfg *config.Config, opts Options) (*Handler, error) {
 		identity:   opts.Identity,
 		jwks:       opts.JWKS,
 		audit:      opts.Audit,
+		admin:      opts.Admin,
 		now:        opts.Now,
 		logger:     opts.Logger,
 	}
@@ -294,6 +318,10 @@ func (h *Handler) route(w http.ResponseWriter, r *http.Request, host, id string,
 		h.jwks.ServeHTTP(w, r)
 		return
 	}
+	if host == h.authDomain && h.admin != nil && admin.Owns(r.URL.Path) {
+		h.serveAdmin(w, r, id, ae)
+		return
+	}
 	rt, isRoute := h.routes[host]
 	if r.URL.Path == reservedPrefix || strings.HasPrefix(r.URL.Path, reservedPrefix+"/") {
 		// Warden's own endpoints, on hosts Warden serves. The auth handler
@@ -347,6 +375,35 @@ func (h *Handler) route(w http.ResponseWriter, r *http.Request, host, id string,
 	}
 	ae.decision = audit.Allow
 	rt.proxy.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), assertionKey{}, tok)))
+}
+
+// serveAdmin applies the route checks to an admin endpoint: main session,
+// admin policy (default deny), audit. Failures are JSON errors.
+func (h *Handler) serveAdmin(w http.ResponseWriter, r *http.Request, id string, ae *auditState) {
+	ae.on = true
+	sess, err := h.admin.Sessions.MainSession(r)
+	if err != nil {
+		h.logger.Error("loading admin session", "request_id", id, "err", err)
+		ae.deny("", "session store error")
+		admin.WriteError(w, http.StatusInternalServerError)
+		return
+	}
+	if sess == nil {
+		ae.deny("", "unauthenticated")
+		admin.WriteError(w, http.StatusUnauthorized)
+		return
+	}
+	ae.subject(sess)
+	d := h.admin.Policy.Evaluate(policy.Input{Path: r.URL.Path, Subject: subject(sess), Now: h.now()})
+	ae.deny(d.Rule, d.Reason)
+	if !d.Allow {
+		h.logger.Info("admin access denied", "request_id", id, "path", r.URL.Path,
+			"user", sess.Username, "rule", d.Rule, "reason", d.Reason)
+		admin.WriteError(w, http.StatusForbidden)
+		return
+	}
+	ae.decision = audit.Allow
+	h.admin.Handler.ServeHTTP(w, r.WithContext(admin.WithSession(r.Context(), sess)))
 }
 
 // subject is the policy view of a session; nil stays nil (and is denied).

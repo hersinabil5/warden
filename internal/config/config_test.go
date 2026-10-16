@@ -41,6 +41,10 @@ strip_headers: [X-Remote-User]
 audit:
   sink: file
   file: audit.jsonl
+admin:
+  allow:
+    - groups: [admins]
+      require_mfa_within: 12h
 routes:
   - host: app.example.test
     upstream: http://127.0.0.1:9001
@@ -97,6 +101,21 @@ func TestParseValidBase(t *testing.T) {
 	}
 	if got := cfg.Routes[0].Policy.Paths[0].Allow[0].Groups; len(got) != 1 || got[0] != "admins" {
 		t.Errorf("path rule groups = %v, want [admins]", got)
+	}
+}
+
+func TestParseAdmin(t *testing.T) {
+	cfg, err := Parse([]byte(baseYAML), testGetenv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Admin == nil || len(cfg.Admin.Allow) != 1 || *cfg.Admin.Allow[0].RequireMFAWithin != 12*time.Hour {
+		t.Errorf("admin = %+v", cfg.Admin)
+	}
+	// Optional: without it the admin API is off.
+	cfg, err = Parse([]byte(edit(t, "admin:\n  allow:\n    - groups: [admins]\n      require_mfa_within: 12h\n", "")), testGetenv)
+	if err != nil || cfg.Admin != nil {
+		t.Errorf("no admin section: %+v, %v", cfg, err)
 	}
 }
 
@@ -242,6 +261,15 @@ func TestParseRejectsInvalid(t *testing.T) {
 		{"listen port too large", `listen: ":8443"`, `listen: ":70000"`, "listen"},
 		{"redirect listener same as main", `http_redirect_listen: ":8080"`, `http_redirect_listen: ":8443"`, "http_redirect_listen"},
 		{"redirect listener same port wildcard", `http_redirect_listen: ":8080"`, `http_redirect_listen: "127.0.0.1:8443"`, "http_redirect_listen"},
+
+		// Admin: who may use it is narrow and always needs recent MFA.
+		{"admin without rules", "  allow:\n    - groups: [admins]\n      require_mfa_within: 12h", "  allow: []", "admin.allow"},
+		{"admin rule without MFA", "      require_mfa_within: 12h", "      users: [alice]", "admin.allow[0].require_mfa_within"},
+		{"admin rule for any user", "    - groups: [admins]\n      require_mfa_within: 12h", "    - authenticated: true\n      require_mfa_within: 12h", "admin.allow[0]"},
+		{"admin rule by email domain only", "    - groups: [admins]\n      require_mfa_within: 12h", "    - email_domains: [warden.local]\n      require_mfa_within: 12h", "admin.allow[0]"},
+		{"admin zero MFA window", "      require_mfa_within: 12h", "      require_mfa_within: 0s", "admin.allow[0].require_mfa_within"},
+		{"admin empty groups", "    - groups: [admins]\n      require_mfa_within: 12h", "    - groups: []\n      require_mfa_within: 12h", "admin.allow[0].groups"},
+		{"admin unknown field", "admin:\n  allow:", "admin:\n  paths: []\n  allow:", "paths"},
 
 		// TLS.
 		{"tls cert missing", "  cert_file: cert.pem", `  cert_file: ""`, "tls.cert_file"},

@@ -223,3 +223,18 @@ func requestHost(r *http.Request) string {
 	}
 	return strings.ToLower(host)
 }
+
+// MainSession returns the signed-in main session behind the auth host
+// cookie on r, or nil when there is none. Only the proxy calls it, for the
+// admin endpoints on the auth host.
+func (h *Handler) MainSession(r *http.Request) (*session.Session, error) {
+	c, err := r.Cookie(h.cookieName)
+	if err != nil || c.Value == "" {
+		return nil, nil //nolint:nilnil // no cookie is not an error
+	}
+	sess, err := h.sessions.Get(r.Context(), c.Value)
+	if errors.Is(err, session.ErrNotFound) {
+		return nil, nil //nolint:nilnil // a dead session is not an error
+	}
+	return sess, err
+}

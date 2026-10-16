@@ -54,6 +54,7 @@ func (c *Config) validate(getenv func(string) string) error {
 		c.StripHeaders[i] = http.CanonicalHeaderKey(h)
 	}
 	c.validateAudit(&p)
+	c.validateAdmin(&p)
 	c.validateRoutes(&p)
 
 	if len(p) > 0 {
@@ -198,6 +199,22 @@ func (c *Config) validateAudit(p *problems) {
 		}
 	default:
 		p.addf("audit.sink", "must be %q or %q, got %q", AuditSinkFile, AuditSinkStdout, c.Audit.Sink)
+	}
+}
+
+func (c *Config) validateAdmin(p *problems) {
+	if c.Admin == nil {
+		return
+	}
+	validateRules(p, "admin.allow", c.Admin.Allow)
+	for i, r := range c.Admin.Allow {
+		rf := fmt.Sprintf("admin.allow[%d]", i)
+		if r.Users == nil && r.Groups == nil {
+			p.addf(rf, "must name users or groups; admin access is never granted to everyone signed in")
+		}
+		if r.RequireMFAWithin == nil {
+			p.addf(rf+".require_mfa_within", "is required for admin access")
+		}
 	}
 }
 

@@ -2,6 +2,7 @@ package session
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -113,11 +114,11 @@ func TestListDoesNotTouchOrLeak(t *testing.T) {
 	if err != nil || len(got) != 1 {
 		t.Fatalf("ListUser = %v, %v", got, err)
 	}
-	if !got[0].LastSeen.Equal(created) || got[0].RefreshToken != "" || got[0].Hash != HashID(id) {
+	if !got[0].LastSeen.Equal(created) || got[0].RefreshToken != "" || got[0].CSRFToken != "" || got[0].Hash != HashID(id) {
 		t.Errorf("listed session = last seen %v, refresh %q, hash %q", got[0].LastSeen, got[0].RefreshToken, got[0].Hash)
 	}
 	all, _, _ := s.List(t.Context(), 0, 10)
-	if len(all) != 1 || all[0].RefreshToken != "" {
+	if len(all) != 1 || all[0].RefreshToken != "" || all[0].CSRFToken != "" {
 		t.Errorf("List leaked or missed: %+v", all)
 	}
 	// Still idle since creation: listing did not keep it alive.
@@ -185,5 +186,27 @@ func TestDeleteHash(t *testing.T) {
 	}
 	if err := s.DeleteHash(t.Context(), HashID(id)); !errors.Is(err, ErrNotFound) {
 		t.Errorf("second DeleteHash = %v, want ErrNotFound", err)
+	}
+}
+
+func TestCreateIssuesCSRFToken(t *testing.T) {
+	s, _, _ := newTestStore(t)
+	planted := testSession()
+	planted.CSRFToken = "attacker-chosen"
+	id1, _ := s.Create(t.Context(), planted)
+	id2, _ := s.Create(t.Context(), testSession())
+	a, err := s.Get(t.Context(), id1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.Get(t.Context(), id2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(a.CSRFToken) != 43 || a.CSRFToken == "attacker-chosen" || a.CSRFToken == b.CSRFToken {
+		t.Errorf("CSRF tokens %q, %q: want fresh 256-bit values", a.CSRFToken, b.CSRFToken)
+	}
+	if out := fmt.Sprintf("%v %+v", *a, *a); strings.Contains(out, a.CSRFToken) {
+		t.Errorf("CSRF token printed: %s", out)
 	}
 }

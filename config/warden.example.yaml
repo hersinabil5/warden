@@ -39,6 +39,13 @@ audit:
   sink: file              # file (JSON lines, appended, 0600) | stdout; startup fails if the file can't be opened
   file: var/audit.jsonl
 
+# Admin API (and, in M6, dashboard) on the auth host. Optional; without it they don't exist.
+# Every rule must name users or groups and set require_mfa_within (docs/DECISIONS.md D22).
+admin:
+  allow:
+    - groups: [admins]
+      require_mfa_within: 12h
+
 # Routes: host is a lowercase DNS name (no port). upstream is scheme://host:port only,
 # no path, so the upstream sees exactly the normalized path policy evaluated.
 # Every allow rule needs at least one condition; empty rules and lists are errors.

@@ -19,6 +19,7 @@ type Config struct {
 	Identity           Identity `yaml:"identity"`
 	StripHeaders       []string `yaml:"strip_headers"` // extra headers to strip; canonicalized
 	Audit              Audit    `yaml:"audit"`
+	Admin              *Admin   `yaml:"admin"` // optional; nil turns the admin API off
 	Routes             []Route  `yaml:"routes"`
 }
 
@@ -61,6 +62,12 @@ type Identity struct {
 type Audit struct {
 	Sink string `yaml:"sink"` // "file" or "stdout"
 	File string `yaml:"file"` // required for, and only allowed with, sink: file
+}
+
+// Admin is who may use the admin API and dashboard on the auth host. Every
+// rule must name users or groups and require recent MFA.
+type Admin struct {
+	Allow []Rule `yaml:"allow"`
 }
 
 const (

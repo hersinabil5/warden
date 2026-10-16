@@ -509,3 +509,42 @@ Redis key for a user's sessions is O(all sessions) and racy.
   cookie is its preimage, and nothing accepts a hash from a client except these admin calls), so
   admins can see it; logs and audit events still get only the 12-character prefix (invariant 9).
 - A session needs a subject; `Create` refuses an empty one.
+
+## D22: Admin API and its protection
+
+**Context:** Admins need to see sessions and recent decisions and revoke sessions. The API is the
+most powerful thing Warden serves, so it must be at least as well guarded as any route.
+
+**Decision:**
+- **Where:** `https://<auth domain>/.warden/api/` only. Requests to it go through the same steps
+  as a route request, in the proxy: normalized path, the *main* session (auth-host cookie), the
+  admin policy (default deny), and an audit event. The admin handler serves nothing unless the
+  proxy attached a session (fail closed on a wiring mistake). Without an `admin:` config section
+  the API doesn't exist.
+- **Who:** `admin.allow` rules. Config validation requires every rule to name `users` or `groups`
+  (never "anyone signed in") and to set `require_mfa_within`, so admin access always means a named
+  admin with recent MFA (`amr` + `auth_time`, D15/D16). Step-up re-authentication for a stale MFA
+  comes in M7; until then the admin gets 403 and signs in again.
+- **Unauthenticated / denied:** JSON `401` / `403` with the request ID, no redirect: the API is for
+  scripts and the dashboard, not navigation.
+- **Endpoints:** `GET me` (identity and CSRF token), `GET sessions` (paginated, or `?sub=` for one
+  user), `POST sessions/revoke {"id"}`, `POST users/revoke {"sub"}` (uses the per-user index, D21),
+  `GET decisions` (filter by `user`, `host`, `decision`; page with `before`), from an in-memory
+  buffer of the last 10,000 events (`Recent`). The durable record is the audit file.
+- **No secrets in responses:** listings omit refresh and CSRF tokens. Sessions are addressed by
+  their full hash in request *bodies*, not paths, so the hash never lands in audit paths or access
+  logs (D19, D21).
+- **CSRF on mutations (POST only):** all of
+  1. `Sec-Fetch-Site`, when sent, must be `same-origin`, and `Origin`, when sent, must be the auth
+     origin;
+  2. `Content-Type: application/json` (a cross-site form can't send it without a CORS preflight,
+     which Warden never answers);
+  3. `X-CSRF-Token` equal (constant time) to a random 256-bit token stored in the session at
+     login. A session without one is refused.
+  Bodies are capped at 4 KiB, decoded strictly (unknown fields and trailing data are errors).
+- Admin revocations are also logged with the admin's username and the target (hash prefix or
+  subject).
+
+**Consequences:** Every admin API call is itself an audit event, including the dashboard's reads.
+A restart empties the recent-decisions buffer. Sessions created before this change have no CSRF
+token and can't mutate until the admin signs in again.
