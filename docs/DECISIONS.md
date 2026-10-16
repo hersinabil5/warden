@@ -579,3 +579,30 @@ group (or disabling them) at the IdP wouldn't take effect until their session ex
 **Consequences:** Every `group_refresh_interval` an active session costs one IdP round trip on
 one request. Sessions created before this change have no stored nonce; a refreshed token that
 carries a nonce then fails the check and the user signs in again.
+
+## D24: Admin dashboard: embedding and serving
+
+**Context:** M6 adds a React dashboard for the admin API. It has to ship inside the single Warden
+binary, and it must not open a weaker path to admin data than the API itself.
+
+**Decision:**
+- **Build and embed:** Vite + React + TypeScript in `web/admin`, built to `web/admin/dist` and
+  embedded with `go:embed all:dist` (package `adminui`). The build output is gitignored except
+  `dist/.gitkeep`, so `go build` and `go test` work without Node; such a binary answers the
+  dashboard with a "not built, run `make build`" page (503). Dependencies are pinned exactly and
+  locked: `react`, `react-dom`, and, for building only, `vite`, `typescript`, `@vitejs/plugin-react`,
+  `@types/react`, `@types/react-dom`. No router (hash navigation), UI kit, or state library.
+- **Same gate as the API:** `/.warden/admin/` on the auth host goes through the proxy's admin
+  checks (main session, admin policy, audit, D22). Because it's a page, a logged-out GET is
+  redirected to login and a denial is the generic HTML 403 page.
+- **After login** the browser lands on the session page, which links to the dashboard. A return
+  URL to the auth host would need invariant 5 relaxed; one extra click doesn't justify that.
+- **Static serving:** only regular files in the embedded build, with names that pass
+  `fs.ValidPath` and have no hidden (`.`) segments or backslashes; never a directory listing or
+  the filesystem. Unknown paths are 404 (hash navigation needs no fallback to `index.html`).
+  GET/HEAD only. `index.html` is `no-store`; hashed `assets/*` are `private, immutable`.
+- **Headers on every dashboard response:** the CSP `default-src 'none'; script-src 'self';
+  style-src 'self'; img-src 'self'; connect-src 'self'; font-src 'self'; base-uri 'none';
+  form-action 'self'; frame-ancestors 'none'`, `X-Frame-Options: DENY`, `nosniff`,
+  `Referrer-Policy: no-referrer`, and same-origin COOP/CORP. The Vite build is configured to emit
+  no inline script (no module-preload polyfill, no inlined assets).

@@ -4,7 +4,8 @@
 deploy/certs/
 config/warden.dev.yaml
 web/admin/node_modules/
-web/admin/dist/
+web/admin/dist/*
+!web/admin/dist/.gitkeep
 *.test
 *.out
 testdata/fuzz/**/corpus-tmp/

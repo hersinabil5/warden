@@ -34,6 +34,7 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 
+	"github.com/hersinabil5/warden/internal/admin"
 	"github.com/hersinabil5/warden/internal/authn/testidp"
 	"github.com/hersinabil5/warden/internal/identity"
 )
@@ -874,6 +875,14 @@ func TestRunAdminRevokesUser(t *testing.T) {
 	if r := get(t, bob, api+"sessions"); r.StatusCode != http.StatusForbidden {
 		t.Errorf("bob on the admin API = %d, want 403", r.StatusCode)
 	}
+	// PLAN.md M6 acceptance: a non-admin gets 403 on the dashboard.
+	dash := "https://auth.example.test:" + port + "/.warden/admin/"
+	if r := get(t, bob, dash); r.StatusCode != http.StatusForbidden || strings.Contains(r.Body, "<script") {
+		t.Errorf("bob on the dashboard = %d", r.StatusCode)
+	}
+	if r := get(t, browserFor(t, env), dash); r.StatusCode != http.StatusFound || !strings.Contains(r.Header.Get("Location"), "/.warden/login") {
+		t.Errorf("logged out on the dashboard = %d %q", r.StatusCode, r.Header.Get("Location"))
+	}
 
 	idp.SetUser(func() map[string]any {
 		return map[string]any{"sub": "sub-alice", "preferred_username": "alice", "groups": []string{"admins"},
@@ -889,6 +898,11 @@ func TestRunAdminRevokesUser(t *testing.T) {
 	}
 	if err := json.Unmarshal([]byte(me.Body), &meBody); err != nil || me.StatusCode != http.StatusOK || meBody.CSRF == "" {
 		t.Fatalf("me = %d %s", me.StatusCode, me.Body)
+	}
+	// The dashboard is served (or reports that it isn't built) under the CSP.
+	if r := get(t, alice, dash); (r.StatusCode != http.StatusOK && r.StatusCode != http.StatusServiceUnavailable) ||
+		r.Header.Get("Content-Security-Policy") != admin.DashboardCSP {
+		t.Errorf("alice on the dashboard = %d, CSP %q", r.StatusCode, r.Header.Get("Content-Security-Policy"))
 	}
 
 	revoke := func(token string) response {

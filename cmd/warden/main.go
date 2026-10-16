@@ -29,6 +29,7 @@ import (
 	"github.com/hersinabil5/warden/internal/policy"
 	"github.com/hersinabil5/warden/internal/proxy"
 	"github.com/hersinabil5/warden/internal/session"
+	adminui "github.com/hersinabil5/warden/web/admin"
 )
 
 // recentDecisions is how many audit events the admin API can page through.
@@ -266,11 +267,12 @@ func newAdminRoute(cfg *config.Config, sessions *session.Store, recent *audit.Re
 	if err != nil {
 		return nil, err
 	}
-	api, err := admin.New(admin.Options{Sessions: sessions, Decisions: recent, AuthOrigin: origin, Logger: logger})
+	api, err := admin.New(admin.Options{Sessions: sessions, Decisions: recent, AuthOrigin: origin,
+		Dashboard: adminui.Files(), Logger: logger})
 	if err != nil {
 		return nil, err
 	}
-	return &proxy.AdminRoute{Handler: api, Policy: pol, Sessions: authHandler}, nil
+	return &proxy.AdminRoute{Handler: api, Policy: pol, Sessions: authHandler, LoginPath: authn.LoginPath}, nil
 }
 
 // newSigner loads the identity assertion keys: the active signing key and

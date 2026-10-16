@@ -16,6 +16,7 @@ var sessionTemplate = template.Must(template.New("session").Parse(`<!doctype htm
 {{if .User}}<h1>Signed in as {{.User}}</h1>
 <p>Email: {{if .Email}}{{.Email}}{{else}}(none verified){{end}}</p>
 <p>Groups: {{if .Groups}}{{.Groups}}{{else}}(none){{end}}</p>
+<p><a href="{{.AdminPath}}">Admin dashboard</a> (admins only)</p>
 <form method="post" action="{{.LogoutPath}}"><button type="submit">Sign out</button></form>
 {{else}}<h1>Not signed in</h1>
 <p><a href="{{.LoginPath}}">Sign in</a></p>
@@ -27,8 +28,8 @@ var sessionTemplate = template.Must(template.New("session").Parse(`<!doctype htm
 // page after a login with no return URL.
 func (h *Handler) sessionPage(w http.ResponseWriter, r *http.Request) {
 	data := struct {
-		User, Email, Groups, LoginPath, LogoutPath string
-	}{LoginPath: LoginPath, LogoutPath: LogoutPath}
+		User, Email, Groups, LoginPath, LogoutPath, AdminPath string
+	}{LoginPath: LoginPath, LogoutPath: LogoutPath, AdminPath: "/.warden/admin/"}
 	if c, err := r.Cookie(h.cookieName); err == nil {
 		sess, gerr := h.sessions.Get(r.Context(), c.Value)
 		switch {

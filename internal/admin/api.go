@@ -6,11 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"mime"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/hersinabil5/warden/internal/audit"
@@ -41,18 +41,21 @@ type Options struct {
 	// AuthOrigin is the auth host's public origin; mutating requests must
 	// come from it.
 	AuthOrigin string
-	Logger     *slog.Logger
+	// Dashboard is the built dashboard (adminui.Files); nil serves none.
+	Dashboard fs.FS
+	Logger    *slog.Logger
 }
 
 // Handler serves the admin API. It must only be reached through the proxy,
 // which authenticates the caller and applies the admin policy, then passes
 // the session with WithSession (docs/DECISIONS.md D22).
 type Handler struct {
-	mux      *http.ServeMux
-	sessions Sessions
-	recent   *audit.Recent
-	origin   string
-	logger   *slog.Logger
+	mux       *http.ServeMux
+	sessions  Sessions
+	recent    *audit.Recent
+	origin    string
+	dashboard fs.FS
+	logger    *slog.Logger
 }
 
 // New builds the admin handler.
@@ -67,11 +70,12 @@ func New(opts Options) (*Handler, error) {
 		opts.Logger = slog.New(slog.DiscardHandler)
 	}
 	h := &Handler{
-		mux:      http.NewServeMux(),
-		sessions: opts.Sessions,
-		recent:   opts.Decisions,
-		origin:   opts.AuthOrigin,
-		logger:   opts.Logger,
+		mux:       http.NewServeMux(),
+		sessions:  opts.Sessions,
+		recent:    opts.Decisions,
+		origin:    opts.AuthOrigin,
+		dashboard: opts.Dashboard,
+		logger:    opts.Logger,
 	}
 	h.mux.HandleFunc("GET "+APIPrefix+"me", h.me)
 	h.mux.HandleFunc("GET "+APIPrefix+"sessions", h.listSessions)
@@ -104,6 +108,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Reached without the proxy's checks: serve nothing.
 		h.logger.Error("admin request without a session", "request_id", requestID(w))
 		writeError(w, http.StatusForbidden, "forbidden")
+		return
+	}
+	if IsDashboard(r.URL.Path) {
+		h.serveDashboard(w, r)
 		return
 	}
 	h.mux.ServeHTTP(w, r)
@@ -350,6 +358,3 @@ func WriteError(w http.ResponseWriter, code int) {
 }
 
 func requestID(w http.ResponseWriter) string { return w.Header().Get("X-Request-ID") }
-
-// Owns reports whether path (normalized) is served by the admin handler.
-func Owns(path string) bool { return strings.HasPrefix(path, APIPrefix) }

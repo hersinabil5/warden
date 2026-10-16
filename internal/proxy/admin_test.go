@@ -50,7 +50,7 @@ func adminHandler(t *testing.T, m mainAs) (*Handler, *adminSpy, *auditLog) {
 		Identity: testIdentity(t), Authenticator: allowAll{}, Audit: log,
 		Logger: slog.New(slog.DiscardHandler), Now: func() time.Time { return testNow },
 		Auth:  http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) }),
-		Admin: &AdminRoute{Handler: spy, Policy: adminPolicy(t), Sessions: m},
+		Admin: &AdminRoute{Handler: spy, Policy: adminPolicy(t), Sessions: m, LoginPath: "/.warden/login"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -193,5 +193,44 @@ func TestNewValidatesAdminRoute(t *testing.T) {
 			Logger: slog.New(slog.DiscardHandler), Admin: ar}); err == nil {
 			t.Errorf("New accepted incomplete admin route %+v", ar)
 		}
+	}
+}
+
+// The dashboard is a page, not an API: a logged-out GET goes to login, a
+// denial is the HTML 403 page. Either way nothing of it is served.
+func TestDashboardAccess(t *testing.T) {
+	alice := &session.Session{Subject: "a-1", Username: "alice", Groups: []string{"admins"},
+		AMR: []string{"pwd", "otp"}, AuthTime: testNow}
+	for _, tt := range []struct {
+		name     string
+		m        mainAs
+		method   string
+		want     int
+		location string
+		ctype    string
+	}{
+		{"admin", mainAs{s: alice}, http.MethodGet, http.StatusOK, "", ""},
+		{"logged out GET", mainAs{}, http.MethodGet, http.StatusFound, "/.warden/login", ""},
+		{"logged out POST", mainAs{}, http.MethodPost, http.StatusUnauthorized, "", "application/json"},
+		{"non-admin", mainAs{s: bobSess}, http.MethodGet, http.StatusForbidden, "", "text/html; charset=utf-8"},
+		{"store down", mainAs{err: errors.New("down")}, http.MethodGet, http.StatusInternalServerError, "", "text/html; charset=utf-8"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			h, spy, log := adminHandler(t, tt.m)
+			req := httptest.NewRequestWithContext(t.Context(), tt.method, "https://auth.example.test/.warden/admin/", nil)
+			rec := serve(h, req)
+			if rec.Code != tt.want || rec.Header().Get("Location") != tt.location {
+				t.Fatalf("status %d, Location %q", rec.Code, rec.Header().Get("Location"))
+			}
+			if tt.ctype != "" && rec.Header().Get("Content-Type") != tt.ctype {
+				t.Errorf("Content-Type %q, want %q", rec.Header().Get("Content-Type"), tt.ctype)
+			}
+			if reached := len(spy.got) > 0; reached != (tt.want == http.StatusOK) {
+				t.Errorf("reached admin handler = %v", reached)
+			}
+			if ev := log.only(t); ev.Path != "/.warden/admin/" || (ev.Decision == audit.Allow) != (tt.want == http.StatusOK) {
+				t.Errorf("event = %+v", ev)
+			}
+		})
 	}
 }

@@ -62,6 +62,8 @@ type AdminRoute struct {
 	Handler  http.Handler
 	Policy   *policy.Policy
 	Sessions MainAuthenticator
+	// LoginPath is where a logged-out browser is sent from the dashboard.
+	LoginPath string
 }
 
 // Options configures a Handler.
@@ -378,18 +380,32 @@ func (h *Handler) route(w http.ResponseWriter, r *http.Request, host, id string,
 }
 
 // serveAdmin applies the route checks to an admin endpoint: main session,
-// admin policy (default deny), audit. Failures are JSON errors.
+// admin policy (default deny), audit. API failures are JSON errors;
+// dashboard failures are pages, and a logged-out browser goes to login.
 func (h *Handler) serveAdmin(w http.ResponseWriter, r *http.Request, id string, ae *auditState) {
 	ae.on = true
+	page := admin.IsDashboard(r.URL.Path) && (r.Method == http.MethodGet || r.Method == http.MethodHead)
+	fail := func(code int) {
+		if page {
+			writePage(w, code, id)
+			return
+		}
+		admin.WriteError(w, code)
+	}
 	sess, err := h.admin.Sessions.MainSession(r, id)
 	if err != nil {
 		h.logger.Error("loading admin session", "request_id", id, "err", err)
 		ae.deny("", "session store error")
-		admin.WriteError(w, http.StatusInternalServerError)
+		fail(http.StatusInternalServerError)
 		return
 	}
 	if sess == nil {
 		ae.deny("", "unauthenticated")
+		if page && h.admin.LoginPath != "" {
+			w.Header().Set("Cache-Control", "no-store")
+			http.Redirect(w, r, h.admin.LoginPath, http.StatusFound)
+			return
+		}
 		admin.WriteError(w, http.StatusUnauthorized)
 		return
 	}
@@ -399,7 +415,7 @@ func (h *Handler) serveAdmin(w http.ResponseWriter, r *http.Request, id string, 
 	if !d.Allow {
 		h.logger.Info("admin access denied", "request_id", id, "path", r.URL.Path,
 			"user", sess.Username, "rule", d.Rule, "reason", d.Reason)
-		admin.WriteError(w, http.StatusForbidden)
+		fail(http.StatusForbidden)
 		return
 	}
 	ae.decision = audit.Allow
