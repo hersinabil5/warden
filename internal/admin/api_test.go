@@ -13,6 +13,7 @@ import (
 	"github.com/alicebob/miniredis/v2"
 
 	"github.com/hersinabil5/warden/internal/audit"
+	"github.com/hersinabil5/warden/internal/config"
 	"github.com/hersinabil5/warden/internal/session"
 )
 
@@ -310,3 +311,61 @@ func TestUnknownEndpointIsJSON404(t *testing.T) {
 		t.Errorf("status %d, type %q", rec.Code, rec.Header().Get("Content-Type"))
 	}
 }
+
+func TestRoutes(t *testing.T) {
+	routes := []config.Route{
+		{Host: "grafana.example.test", Upstream: "http://127.0.0.1:9002", Policy: config.Policy{
+			Allow: []config.Rule{{Groups: []string{"sre", "admins"}}},
+			Paths: []config.PathRule{{Prefix: "/admin", Allow: []config.Rule{{Groups: []string{"admins"}, RequireMFAWithin: ptr(10 * time.Minute)}}}},
+		}},
+		{Host: "app.example.test", Upstream: "https://127.0.0.1:9003",
+			UpstreamTLS: &config.UpstreamTLS{CAFile: "/secret/ca.pem", ClientCertFile: "/secret/client.pem", ClientKeyFile: "/secret/client-key.pem"},
+			Policy:      config.Policy{Allow: []config.Rule{{Authenticated: ptr(true)}, {EmailDomains: []string{"warden.local"}}}, CaseInsensitivePaths: true}},
+	}
+	f := newFixture(t)
+	h, err := New(Options{Sessions: f.store, Decisions: f.recent, AuthOrigin: authOrigin, Routes: routes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.h = h
+	rec := f.do(t, http.MethodGet, "/.warden/api/routes", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "/secret/") {
+		t.Errorf("routes leak TLS file paths: %s", rec.Body.String())
+	}
+	got := decode[struct {
+		Routes []struct {
+			Host        string `json:"host"`
+			Upstream    string `json:"upstream"`
+			UpstreamTLS bool   `json:"upstream_tls"`
+			Policy      struct {
+				Allow []map[string]any `json:"allow"`
+				Paths []struct {
+					Prefix string           `json:"prefix"`
+					Allow  []map[string]any `json:"allow"`
+				} `json:"paths"`
+				CaseInsensitive bool `json:"case_insensitive_paths"`
+			} `json:"policy"`
+		} `json:"routes"`
+	}](t, rec)
+	if len(got.Routes) != 2 {
+		t.Fatalf("routes = %+v", got)
+	}
+	g, a := got.Routes[0], got.Routes[1]
+	if g.Host != "grafana.example.test" || len(g.Policy.Paths) != 1 || g.Policy.Paths[0].Prefix != "/admin" ||
+		g.Policy.Paths[0].Allow[0]["require_mfa_within"] != "10m0s" {
+		t.Errorf("grafana = %+v", g)
+	}
+	domains, _ := a.Policy.Allow[1]["email_domains"].([]any)
+	if !a.UpstreamTLS || !a.Policy.CaseInsensitive || a.Policy.Allow[0]["authenticated"] != true ||
+		len(domains) != 1 || domains[0] != "warden.local" {
+		t.Errorf("app = %+v", a)
+	}
+	if _, ok := g.Policy.Allow[0]["users"]; ok {
+		t.Errorf("absent conditions should be omitted: %v", g.Policy.Allow[0])
+	}
+}
+
+func ptr[T any](v T) *T { return &v }

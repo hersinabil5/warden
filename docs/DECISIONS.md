@@ -606,3 +606,7 @@ binary, and it must not open a weaker path to admin data than the API itself.
   form-action 'self'; frame-ancestors 'none'`, `X-Frame-Options: DENY`, `nosniff`,
   `Referrer-Policy: no-referrer`, and same-origin COOP/CORP. The Vite build is configured to emit
   no inline script (no module-preload polyfill, no inlined assets).
+- **Pages:** live sessions (find by name, revoke), audit log (filter by user, host, decision; page
+  back with "load older"), routes (read-only, from a new `GET /api/routes` that shows host,
+  upstream, whether mTLS is on, and the policy, but never TLS file paths), and a user page (their
+  sessions, recent access, "revoke all"). Every revoke asks for confirmation first.

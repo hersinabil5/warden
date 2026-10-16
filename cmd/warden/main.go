@@ -268,7 +268,7 @@ func newAdminRoute(cfg *config.Config, sessions *session.Store, recent *audit.Re
 		return nil, err
 	}
 	api, err := admin.New(admin.Options{Sessions: sessions, Decisions: recent, AuthOrigin: origin,
-		Dashboard: adminui.Files(), Logger: logger})
+		Dashboard: adminui.Files(), Routes: cfg.Routes, Logger: logger})
 	if err != nil {
 		return nil, err
 	}

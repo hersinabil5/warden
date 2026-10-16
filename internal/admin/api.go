@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/hersinabil5/warden/internal/audit"
+	"github.com/hersinabil5/warden/internal/config"
 	"github.com/hersinabil5/warden/internal/session"
 )
 
@@ -43,7 +44,9 @@ type Options struct {
 	AuthOrigin string
 	// Dashboard is the built dashboard (adminui.Files); nil serves none.
 	Dashboard fs.FS
-	Logger    *slog.Logger
+	// Routes are shown read-only on the dashboard.
+	Routes []config.Route
+	Logger *slog.Logger
 }
 
 // Handler serves the admin API. It must only be reached through the proxy,
@@ -55,6 +58,7 @@ type Handler struct {
 	recent    *audit.Recent
 	origin    string
 	dashboard fs.FS
+	routeList []routeView
 	logger    *slog.Logger
 }
 
@@ -75,6 +79,7 @@ func New(opts Options) (*Handler, error) {
 		recent:    opts.Decisions,
 		origin:    opts.AuthOrigin,
 		dashboard: opts.Dashboard,
+		routeList: routeViews(opts.Routes),
 		logger:    opts.Logger,
 	}
 	h.mux.HandleFunc("GET "+APIPrefix+"me", h.me)
@@ -82,6 +87,7 @@ func New(opts Options) (*Handler, error) {
 	h.mux.HandleFunc("POST "+APIPrefix+"sessions/revoke", h.mutating(h.revokeSession))
 	h.mux.HandleFunc("POST "+APIPrefix+"users/revoke", h.mutating(h.revokeUser))
 	h.mux.HandleFunc("GET "+APIPrefix+"decisions", h.decisions)
+	h.mux.HandleFunc("GET "+APIPrefix+"routes", h.routes)
 	h.mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "not found")
 	})
