@@ -110,7 +110,8 @@ func TestMe(t *testing.T) {
 	if strings.Contains(rec.Body.String(), "refresh") {
 		t.Errorf("me leaks the refresh token: %s", rec.Body.String())
 	}
-	for k, want := range map[string]string{"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Content-Type": "application/json"} {
+	for k, want := range map[string]string{"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "Content-Type": "application/json",
+		"Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'"} {
 		if got := rec.Header().Get(k); got != want {
 			t.Errorf("%s = %q, want %q", k, got, want)
 		}

@@ -32,7 +32,7 @@ Update this whenever a change adds, removes, or weakens a mitigation.
 | T10 | Weak authentication on sensitive paths | `require_mfa_within` checks `amr` (two factors or `mfa`) and `auth_time` recency; Keycloak OTP + `amr` mapper in the dev realm (D16); denied with 403 until step-up re-authentication (D15) | M3, M7 | partial |
 | T11 | Brute force / abuse of auth endpoints | Rate limiting | M7 | planned |
 | T12 | Secrets leaking via logs | Never log tokens/cookies/codes; hashed identifiers only; client secret held in a self-redacting `config.Secret` and never echoed in config errors | all | partial (config: done) |
-| T13 | Admin dashboard CSRF / XSS | API mutations need same-origin `Sec-Fetch-Site`/`Origin`, a JSON content type, and the session's random CSRF token; strict JSON decoding (D22). Strict CSP, no inline scripts | M5, M6 | partial |
+| T13 | Admin dashboard CSRF / XSS | API mutations need same-origin `Sec-Fetch-Site`/`Origin`, a JSON content type, and the session's random CSRF token; strict JSON decoding (D22). Dashboard behind the admin policy with a strict CSP (`script-src`/`style-src 'self'`, no framing); the build is tested to contain no inline code; API responses locked down by CSP too (D24) | M5, M6 | done |
 | T14 | Misconfiguration silently weakens policy | Strict config decoding and validation at startup; ambiguous rules, non-normalized path prefixes, and pathful upstreams rejected (D5) | M1 | done |
 | T15 | Open redirect via HTTP→HTTPS redirect (attacker-set Host) | Redirect only to configured hosts, configured HTTPS port; else 400 (D7) | M1 | done |
 | T16 | Host confusion / domain fronting (SNI ≠ Host) | 421 when TLS ServerName and Host differ (D7) | M1 | done |

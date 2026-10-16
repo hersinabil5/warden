@@ -24,6 +24,10 @@ const APIPrefix = "/.warden/api/"
 // CSRFHeader carries the session's CSRF token on mutating requests.
 const CSRFHeader = "X-CSRF-Token"
 
+// apiCSP locks down API responses if one is opened as a page: nothing loads,
+// nothing frames it.
+const apiCSP = "default-src 'none'; frame-ancestors 'none'"
+
 // maxBody bounds a mutating request's JSON body.
 const maxBody = 4 << 10
 
@@ -110,6 +114,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	hdr := w.Header()
 	hdr.Set("Cache-Control", "no-store")
 	hdr.Set("X-Content-Type-Options", "nosniff")
+	hdr.Set("Content-Security-Policy", apiCSP) // the dashboard sets its own
 	if sessionFrom(r.Context()) == nil {
 		// Reached without the proxy's checks: serve nothing.
 		h.logger.Error("admin request without a session", "request_id", requestID(w))
@@ -360,6 +365,7 @@ func writeError(w http.ResponseWriter, code int, msg string) {
 func WriteError(w http.ResponseWriter, code int) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", apiCSP)
 	writeError(w, code, fmt.Sprintf("%d %s", code, http.StatusText(code)))
 }
 

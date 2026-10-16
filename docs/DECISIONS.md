@@ -610,3 +610,9 @@ binary, and it must not open a weaker path to admin data than the API itself.
   back with "load older"), routes (read-only, from a new `GET /api/routes` that shows host,
   upstream, whether mTLS is on, and the policy, but never TLS file paths), and a user page (their
   sessions, recent access, "revoke all"). Every revoke asks for confirmation first.
+- **Enforcing "no inline code":** a Go test walks the embedded build and fails on any inline
+  `<script>` body, `<style>` element, `style=` or `on*=` attribute, `javascript:` URL, or
+  cross-origin script/stylesheet reference (skipped only when the frontend isn't built). API
+  responses carry `default-src 'none'; frame-ancestors 'none'` too, in case one is opened as a
+  page. The dashboard sends the session's CSRF token (from `GET /api/me`) on every mutation; the
+  API enforces it (D22).
