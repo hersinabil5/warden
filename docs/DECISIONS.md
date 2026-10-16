@@ -488,3 +488,24 @@ unnoticed.
 **Consequences:** A full disk shows up as error logs, not as an outage. With `stdout`, a reader
 that stops draining the pipe eventually blocks requests; use `file` in production. No rotation:
 use an external tool (`logrotate` with `copytruncate`, or rotate by renaming and restarting).
+
+## D21: Session indexes
+
+**Context:** The admin API lists sessions and revokes all of a user's sessions. Scanning every
+Redis key for a user's sessions is O(all sessions) and racy.
+
+**Decision:**
+- Two Redis sorted sets of main session hashes, scored by creation time: `warden:sessions` (all)
+  and `warden:user:<sub>` (per OIDC subject, which is stable where usernames can change). Both are
+  written in the same transaction right after the session record; if indexing fails, the new
+  session is deleted, so no session exists that "revoke all" can't find.
+- **Revoke all** reads only the user's set and revokes each session with its app sessions, then
+  deletes the set: O(sessions for that user). Revoking one session removes it from both sets.
+- **Stale entries** (a session that idled out or expired in Redis) are pruned two ways: by score
+  once they're past the absolute lifetime, and lazily when a listing finds the record gone. A
+  stale entry is harmless: it points at nothing.
+- Listings are read-only (they don't extend the idle timer) and never return the refresh token.
+- Admin operations address a session by its full SHA-256 hash. The hash isn't a credential (the
+  cookie is its preimage, and nothing accepts a hash from a client except these admin calls), so
+  admins can see it; logs and audit events still get only the 12-character prefix (invariant 9).
+- A session needs a subject; `Create` refuses an empty one.

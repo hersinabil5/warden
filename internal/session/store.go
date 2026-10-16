@@ -141,14 +141,23 @@ func childrenKey(hash string) string { return keyPrefix + "children:" + hash }
 // Create stores a new main session and returns its ID. A fresh ID is always
 // generated, so a session can never be fixed by a client (T2).
 func (s *Store) Create(ctx context.Context, sess Session) (string, error) {
+	if sess.Subject == "" {
+		return "", errors.New("session store: subject is required")
+	}
 	now := s.now()
 	sess.Created, sess.LastSeen = now, now
 	id, err := NewID()
 	if err != nil {
 		return "", err
 	}
+	hash := HashID(id)
 	rec := record{Kind: kindMain, Session: &sess}
-	if err := s.write(ctx, HashID(id), rec, s.ttl(&sess, now), false); err != nil {
+	if err := s.write(ctx, hash, rec, s.ttl(&sess, now), false); err != nil {
+		return "", err
+	}
+	if err := s.index(ctx, hash, &sess); err != nil {
+		// An unindexed session could not be revoked per user; drop it.
+		_ = s.rdb.Del(ctx, sessionKey(hash)).Err()
 		return "", err
 	}
 	return id, nil
@@ -199,22 +208,19 @@ func (s *Store) GetApp(ctx context.Context, id, host string) (*Session, error) {
 	return s.getMain(ctx, rec.Parent)
 }
 
-// Delete removes a main session and its app sessions. Deleting an unknown ID
-// is not an error.
+// Delete removes a main session, its app sessions, and its index entries.
+// Deleting an unknown ID is not an error.
 func (s *Store) Delete(ctx context.Context, id string) error {
 	hash := HashID(id)
-	children, err := s.rdb.SMembers(ctx, childrenKey(hash)).Result()
-	if err != nil {
-		return fmt.Errorf("session store: %w", err)
+	sub := ""
+	rec, err := s.load(ctx, hash)
+	switch {
+	case err == nil && rec.Kind == kindMain && rec.Session != nil:
+		sub = rec.Session.Subject
+	case err != nil && !errors.Is(err, ErrNotFound):
+		return err
 	}
-	keys := []string{sessionKey(hash), childrenKey(hash)}
-	for _, c := range children {
-		keys = append(keys, sessionKey(c))
-	}
-	if err := s.rdb.Del(ctx, keys...).Err(); err != nil {
-		return fmt.Errorf("session store: %w", err)
-	}
-	return nil
+	return s.revoke(ctx, hash, sub)
 }
 
 func (s *Store) getMain(ctx context.Context, hash string) (*Session, error) {
