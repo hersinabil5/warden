@@ -434,3 +434,35 @@ Warden should talk only to the real upstream.
 other than the example (whoami, Grafana) still run plain HTTP on loopback; putting them behind
 mTLS or on a private network is M7. Certificate rotation is "run `make internal-ca` and restart";
 there's no revocation for the dev CA.
+
+## D19: Audit event schema and what gets audited
+
+**Context:** M5 needs every allow and deny recorded with a reason, in a form an admin API and
+dashboard can read, without turning the audit log into a second place secrets can leak.
+
+**Decision:**
+- **One event per request to a route host**, emitted after the response with its final status and
+  latency. Warden's own endpoints (`/.warden/*`, healthz, JWKS) and unknown hosts produce no
+  event: they aren't access decisions on a protected app. Login and session events come with the
+  admin API and refresh tasks.
+- **Fields:** `time` (UTC, RFC 3339 nanoseconds), `request_id` (Warden's own, D7), `user`,
+  `session`, `host`, `method`, `path`, `decision`, `rule`, `reason`, `latency_ms`, `status`.
+- **Fail closed in the log too.** Each request starts as `deny`/`no decision`; only reaching the
+  upstream makes it `allow`. Any other `Decision` value encodes as `deny`. Outcomes before policy
+  get fixed reasons: `invalid path`, `misdirected request`, `no authenticator`, `unauthenticated`
+  (which also covers a session-store error; the 500 status tells them apart). A policy allow
+  followed by a signing failure is a `deny` with reason `identity assertion failed`. An upstream
+  error after an allow stays `allow` with status 502: the policy did grant access.
+- **Path:** the normalized path policy saw. A rejected path has no normalized form, so the event
+  records the raw request target's path (still percent-encoded), without the query.
+- **Session:** the first 12 hex characters (48 bits) of the *main* session's SHA-256 hash, so the
+  events from one login line up across app hosts and match what "revoke session" targets. That's
+  enough to correlate events, and useless for finding or forging a session.
+- **Never recorded:** the query string, cookies, `Authorization`, tokens, or full hashes
+  (invariant 9).
+- `audit.Recorder.Record` returns nothing: it must not change the response. Sinks handle their own
+  failures (next task). Until then, `main` uses `audit.LogRecorder` (events in the process log).
+
+**Consequences:** Requests that never reach a decision on a route (e.g. 404 on an unknown host)
+leave no audit trail, only a request log line. Repeated events with no `user` are the place to
+look for scanning.

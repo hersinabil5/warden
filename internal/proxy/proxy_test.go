@@ -80,7 +80,7 @@ func ptr[T any](v T) *T { return &v }
 // newTestHandler serves cfg with every request authenticated (allowAll).
 func newTestHandler(t *testing.T, cfg *config.Config) *Handler {
 	t.Helper()
-	h, err := New(cfg, Options{Identity: testIdentity(t), Authenticator: allowAll{}, Logger: slog.New(slog.DiscardHandler)})
+	h, err := New(cfg, Options{Audit: nopAudit{}, Identity: testIdentity(t), Authenticator: allowAll{}, Logger: slog.New(slog.DiscardHandler)})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -202,7 +202,7 @@ func TestSNIMustMatchHost(t *testing.T) {
 func TestNewRejectsRouteWithoutUpstream(t *testing.T) {
 	cfg := testConfig(t, "http://127.0.0.1:1")
 	cfg.Routes[0].UpstreamURL = nil
-	if _, err := New(cfg, Options{Identity: testIdentity(t), Logger: slog.New(slog.DiscardHandler)}); err == nil {
+	if _, err := New(cfg, Options{Audit: nopAudit{}, Identity: testIdentity(t), Logger: slog.New(slog.DiscardHandler)}); err == nil {
 		t.Error("New accepted a route with no parsed upstream")
 	}
 }
@@ -210,7 +210,7 @@ func TestNewRejectsRouteWithoutUpstream(t *testing.T) {
 func TestNewRejectsInvalidPolicy(t *testing.T) {
 	cfg := testConfig(t, "http://127.0.0.1:1")
 	cfg.Routes[0].Policy = config.Policy{}
-	if _, err := New(cfg, Options{Identity: testIdentity(t), Logger: slog.New(slog.DiscardHandler)}); err == nil {
+	if _, err := New(cfg, Options{Audit: nopAudit{}, Identity: testIdentity(t), Logger: slog.New(slog.DiscardHandler)}); err == nil {
 		t.Error("New accepted a route with no allow rules")
 	}
 }

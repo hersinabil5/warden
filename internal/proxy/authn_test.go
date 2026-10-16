@@ -30,7 +30,7 @@ func (d *denyAll) Authenticate(w http.ResponseWriter, _ *http.Request, host stri
 func TestUnauthenticatedRequestsNeverReachUpstream(t *testing.T) {
 	up := newEcho(t)
 	deny := &denyAll{}
-	h, err := New(testConfig(t, up.URL), Options{Identity: testIdentity(t), Authenticator: deny, Logger: slog.New(slog.DiscardHandler)})
+	h, err := New(testConfig(t, up.URL), Options{Audit: nopAudit{}, Identity: testIdentity(t), Authenticator: deny, Logger: slog.New(slog.DiscardHandler)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestUnauthenticatedRequestsNeverReachUpstream(t *testing.T) {
 
 func TestNilAuthenticatorFailsClosed(t *testing.T) {
 	up := newEcho(t)
-	h, err := New(testConfig(t, up.URL), Options{Identity: testIdentity(t), Logger: slog.New(slog.DiscardHandler)})
+	h, err := New(testConfig(t, up.URL), Options{Audit: nopAudit{}, Identity: testIdentity(t), Logger: slog.New(slog.DiscardHandler)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestNilAuthenticatorFailsClosed(t *testing.T) {
 
 func TestWardenCookiesNotForwarded(t *testing.T) {
 	up := newEcho(t)
-	h, err := New(testConfig(t, up.URL), Options{Identity: testIdentity(t),
+	h, err := New(testConfig(t, up.URL), Options{Audit: nopAudit{}, Identity: testIdentity(t),
 		Authenticator: allowAll{}, Logger: slog.New(slog.DiscardHandler),
 		CookieNames: []string{"_warden", "__Host-warden_*"},
 	})
@@ -102,7 +102,7 @@ func TestUpstreamCannotSetWardenCookies(t *testing.T) {
 		w.Header().Add("Set-Cookie", "app=ok; Path=/")
 	}))
 	defer up.Close()
-	h, err := New(testConfig(t, up.URL), Options{Identity: testIdentity(t),
+	h, err := New(testConfig(t, up.URL), Options{Audit: nopAudit{}, Identity: testIdentity(t),
 		Authenticator: allowAll{}, Logger: slog.New(slog.DiscardHandler),
 		CookieNames: []string{"_warden", "__Host-warden_*"},
 	})

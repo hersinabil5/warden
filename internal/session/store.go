@@ -43,6 +43,9 @@ type Session struct {
 	RefreshToken string    `json:"refresh_token"` // secret; never logged
 	Created      time.Time `json:"created"`
 	LastSeen     time.Time `json:"last_seen"`
+	// Hash is the main session's HashID, set on lookup for audit
+	// correlation. It is the storage key, so it is never stored itself.
+	Hash string `json:"-"`
 }
 
 // Format prints only non-secret identity fields, for every fmt verb, so a
@@ -233,6 +236,7 @@ func (s *Store) getMain(ctx context.Context, hash string) (*Session, error) {
 	if err := s.touch(ctx, hash, rec); err != nil {
 		return nil, err
 	}
+	sess.Hash = hash
 	return sess, nil
 }
 

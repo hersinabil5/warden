@@ -305,6 +305,36 @@ func TestAppSessions(t *testing.T) {
 	}
 }
 
+// Both lookups report the main session's hash (for audit correlation), and
+// it is never written to Redis.
+func TestSessionHashIsMainHash(t *testing.T) {
+	s, mr, _ := newTestStore(t)
+	mainID, err := s.Create(t.Context(), testSession())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const host = "whoami.example.test"
+	appID, err := s.CreateApp(t.Context(), HashID(mainID), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Get(t.Context(), mainID)
+	if err != nil || got.Hash != HashID(mainID) {
+		t.Fatalf("Get hash = %q, %v; want %q", got.Hash, err, HashID(mainID))
+	}
+	got, err = s.GetApp(t.Context(), appID, host)
+	if err != nil || got.Hash != HashID(mainID) {
+		t.Fatalf("GetApp hash = %q, %v; want the main hash %q", got.Hash, err, HashID(mainID))
+	}
+	v, err := mr.Get(keyPrefix + "s:" + HashID(mainID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(v, `"hash"`) || strings.Contains(v, `"Hash"`) {
+		t.Errorf("stored record includes the hash: %s", v)
+	}
+}
+
 func TestCreateAppRequiresLiveParent(t *testing.T) {
 	s, _, c := newTestStore(t)
 	if _, err := s.CreateApp(t.Context(), HashID("no-such-session"), "whoami.example.test"); !errors.Is(err, ErrNotFound) {

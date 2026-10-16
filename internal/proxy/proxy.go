@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hersinabil5/warden/internal/audit"
 	"github.com/hersinabil5/warden/internal/config"
 	"github.com/hersinabil5/warden/internal/identity"
 	"github.com/hersinabil5/warden/internal/pathnorm"
@@ -69,6 +70,8 @@ type Options struct {
 	// JWKS serves the assertion keys at JWKSPath on the auth host. Nil
 	// leaves that path 404.
 	JWKS http.Handler
+	// Audit receives one event per request to a route host. Required.
+	Audit audit.Recorder
 }
 
 // Handler routes requests by Host to upstream reverse proxies.
@@ -79,6 +82,7 @@ type Handler struct {
 	authn      Authenticator
 	identity   Asserter
 	jwks       http.Handler
+	audit      audit.Recorder
 	now        func() time.Time
 	logger     *slog.Logger
 }
@@ -94,6 +98,9 @@ func New(cfg *config.Config, opts Options) (*Handler, error) {
 	if opts.Identity == nil {
 		return nil, errors.New("no identity asserter")
 	}
+	if opts.Audit == nil {
+		return nil, errors.New("no audit recorder")
+	}
 	idHeader := cfg.Identity.Header
 	if idHeader == "" {
 		return nil, errors.New("no identity header configured")
@@ -105,6 +112,7 @@ func New(cfg *config.Config, opts Options) (*Handler, error) {
 		authn:      opts.Authenticator,
 		identity:   opts.Identity,
 		jwks:       opts.JWKS,
+		audit:      opts.Audit,
 		now:        opts.Now,
 		logger:     opts.Logger,
 	}
@@ -168,7 +176,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	host := hostOnly(r.Host)
 	rec := &statusRecorder{ResponseWriter: w}
+	_, isRoute := h.routes[host]
+	// Every request to a route host is audited unless route() says it is one
+	// of Warden's own endpoints. Until a decision is made, it is a deny.
+	ae := &auditState{on: isRoute, reason: "no decision"}
+	rawPath, _, _ := strings.Cut(r.RequestURI, "?")
 	defer func() {
+		if ae.on {
+			path := r.URL.Path
+			if ae.rawPath {
+				path = rawPath // rejected: there is no normalized path
+			}
+			h.audit.Record(r.Context(), audit.Event{
+				Time: start, RequestID: id, User: ae.user, Session: ae.session,
+				Host: host, Method: r.Method, Path: path,
+				Decision: ae.decision, Rule: ae.rule, Reason: ae.reason,
+				Latency: time.Since(start), Status: rec.statusCode(),
+			})
+		}
 		// Path only: the query string can carry tokens or codes (invariant 9).
 		h.logger.Info("request",
 			"request_id", id,
@@ -182,6 +207,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// The TLS session was negotiated for ServerName; refuse to use it for a
 	// different host.
 	if r.TLS != nil && r.TLS.ServerName != "" && !strings.EqualFold(r.TLS.ServerName, host) {
+		ae.deny("", "misdirected request")
+		ae.rawPath = true
 		writePage(rec, http.StatusMisdirectedRequest, id)
 		return
 	}
@@ -190,11 +217,33 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	norm, err := normalizedPath(r)
 	if err != nil {
 		h.logger.Info("request path rejected", "request_id", id, "host", host, "reason", err.Error())
+		ae.deny("", "invalid path")
+		ae.rawPath = true
 		writePage(rec, http.StatusBadRequest, id)
 		return
 	}
 	r = withPath(r, norm)
-	h.route(rec, r, host, id)
+	h.route(rec, r, host, id, ae)
+}
+
+// auditState is what route decides about a request, for its audit event.
+// ServeHTTP adds the outcome once the response is written.
+type auditState struct {
+	on            bool // record an event for this request
+	rawPath       bool // record the path as sent: it was never normalized
+	decision      audit.Decision
+	rule, reason  string
+	user, session string
+}
+
+func (a *auditState) deny(rule, reason string) {
+	a.decision, a.rule, a.reason = audit.Deny, rule, reason
+}
+
+func (a *auditState) subject(s *session.Session) {
+	if s != nil {
+		a.user, a.session = s.Username, audit.SessionPrefix(s.Hash)
+	}
 }
 
 // normalizedPath normalizes the path exactly as the client sent it.
@@ -230,13 +279,14 @@ func withPath(r *http.Request, p string) *http.Request {
 	return &r2
 }
 
-func (h *Handler) route(w http.ResponseWriter, r *http.Request, host, id string) {
-
+func (h *Handler) route(w http.ResponseWriter, r *http.Request, host, id string, ae *auditState) {
 	if r.URL.Path == HealthzPath {
+		ae.on = false
 		serveHealthz(w, r, id)
 		return
 	}
 	if host == h.authDomain && r.URL.Path == JWKSPath {
+		ae.on = false
 		if h.jwks == nil {
 			writePage(w, http.StatusNotFound, id)
 			return
@@ -248,6 +298,7 @@ func (h *Handler) route(w http.ResponseWriter, r *http.Request, host, id string)
 	if r.URL.Path == reservedPrefix || strings.HasPrefix(r.URL.Path, reservedPrefix+"/") {
 		// Warden's own endpoints, on hosts Warden serves. The auth handler
 		// decides which endpoint exists on which host.
+		ae.on = false
 		if (host == h.authDomain || isRoute) && h.auth != nil {
 			h.auth.ServeHTTP(w, r)
 			return
@@ -261,14 +312,18 @@ func (h *Handler) route(w http.ResponseWriter, r *http.Request, host, id string)
 	}
 
 	if h.authn == nil {
+		ae.deny("", "no authenticator")
 		writePage(w, http.StatusForbidden, id)
 		return
 	}
 	sess, ok := h.authn.Authenticate(w, r, host)
 	if !ok {
+		ae.deny("", "unauthenticated")
 		return
 	}
+	ae.subject(sess)
 	d := rt.policy.Evaluate(policy.Input{Path: r.URL.Path, Subject: subject(sess), Now: h.now()})
+	ae.deny(d.Rule, d.Reason)
 	if !d.Allow {
 		// The rule and reason go to the log only; the client sees a generic
 		// 403 page with the request ID.
@@ -286,9 +341,11 @@ func (h *Handler) route(w http.ResponseWriter, r *http.Request, host, id string)
 	}, host)
 	if err != nil {
 		h.logger.Error("signing identity assertion", "request_id", id, "host", host, "err", err)
+		ae.reason = "identity assertion failed"
 		writePage(w, http.StatusInternalServerError, id)
 		return
 	}
+	ae.decision = audit.Allow
 	rt.proxy.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), assertionKey{}, tok)))
 }
 

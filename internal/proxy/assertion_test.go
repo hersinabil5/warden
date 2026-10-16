@@ -43,7 +43,7 @@ func TestUpstreamGetsSignedIdentity(t *testing.T) {
 	up := newEcho(t)
 	signer := testIdentity(t)
 	sess := &session.Session{Subject: "b-1", Username: "bob", Email: "bob@warden.local", Groups: []string{"dev"}}
-	h, err := New(policyConfig(t, up.URL, false), Options{
+	h, err := New(policyConfig(t, up.URL, false), Options{Audit: nopAudit{},
 		Identity: signer, Authenticator: asUser{sess}, Logger: slog.New(slog.DiscardHandler),
 	})
 	if err != nil {
@@ -93,7 +93,7 @@ func (failingAsserter) Assert(identity.Claims, string) (string, error) {
 func TestAssertionFailureFailsClosed(t *testing.T) {
 	up := newEcho(t)
 	var logs bytes.Buffer
-	h, err := New(testConfig(t, up.URL), Options{
+	h, err := New(testConfig(t, up.URL), Options{Audit: nopAudit{},
 		Identity: failingAsserter{}, Authenticator: allowAll{}, Logger: slog.New(slog.NewJSONHandler(&logs, nil)),
 	})
 	if err != nil {
@@ -125,11 +125,11 @@ func TestNoAssertionWithoutAllow(t *testing.T) {
 
 func TestNewRequiresIdentity(t *testing.T) {
 	cfg := testConfig(t, "http://127.0.0.1:1")
-	if _, err := New(cfg, Options{Logger: slog.New(slog.DiscardHandler)}); err == nil {
+	if _, err := New(cfg, Options{Audit: nopAudit{}, Logger: slog.New(slog.DiscardHandler)}); err == nil {
 		t.Error("New accepted no asserter")
 	}
 	cfg.Identity.Header = ""
-	if _, err := New(cfg, Options{Identity: testIdentity(t), Logger: slog.New(slog.DiscardHandler)}); err == nil {
+	if _, err := New(cfg, Options{Audit: nopAudit{}, Identity: testIdentity(t), Logger: slog.New(slog.DiscardHandler)}); err == nil {
 		t.Error("New accepted no identity header")
 	}
 }
@@ -139,7 +139,7 @@ func TestJWKSOnAuthHost(t *testing.T) {
 	up := newEcho(t)
 	signer := testIdentity(t)
 	deny := &denyAll{}
-	h, err := New(testConfig(t, up.URL), Options{
+	h, err := New(testConfig(t, up.URL), Options{Audit: nopAudit{},
 		Identity: signer, JWKS: signer.JWKSHandler(), Authenticator: deny, Logger: slog.New(slog.DiscardHandler),
 	})
 	if err != nil {

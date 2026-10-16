@@ -114,7 +114,7 @@ func mtlsHandler(t *testing.T, upstream string, up *config.UpstreamTLS) (*Handle
 	u, _ := url.Parse(upstream)
 	cfg.Routes[0].UpstreamURL = u
 	cfg.Routes[0].UpstreamTLS = up
-	return New(cfg, Options{Identity: testIdentity(t), Authenticator: allowAll{}, Logger: slog.New(slog.DiscardHandler),
+	return New(cfg, Options{Audit: nopAudit{}, Identity: testIdentity(t), Authenticator: allowAll{}, Logger: slog.New(slog.DiscardHandler),
 		TransportTimeouts: fastTimeouts})
 }
 

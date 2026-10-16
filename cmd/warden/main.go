@@ -21,6 +21,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	"github.com/hersinabil5/warden/internal/audit"
 	"github.com/hersinabil5/warden/internal/authn"
 	"github.com/hersinabil5/warden/internal/config"
 	"github.com/hersinabil5/warden/internal/identity"
@@ -159,6 +160,9 @@ func run(ctx context.Context, args []string, logOut io.Writer, getenv func(strin
 		Auth:          authHandler,
 		Authenticator: authHandler,
 		CookieNames:   authn.CookieNames(cfg.Session.CookieName),
+		// Until the configured sinks exist (PLAN.md M5), events go to the
+		// process log.
+		Audit: audit.LogRecorder{Logger: logger},
 	})
 	if err != nil {
 		return err
