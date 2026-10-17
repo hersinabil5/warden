@@ -210,3 +210,60 @@ func TestCreateIssuesCSRFToken(t *testing.T) {
 		t.Errorf("CSRF token printed: %s", out)
 	}
 }
+
+func visitorSession(sub, visitor string) Session {
+	s := sessionFor(sub, sub)
+	s.Visitor = visitor
+	return s
+}
+
+// Demo mode lists one visitor's sessions through a per-visitor index.
+func TestListVisitor(t *testing.T) {
+	s, _, c := newTestStore(t)
+	a1, _ := s.Create(t.Context(), visitorSession("sub-alice", "v1"))
+	c.advance(time.Second)
+	b1, _ := s.Create(t.Context(), visitorSession("sub-bob", "v1"))
+	_, _ = s.Create(t.Context(), visitorSession("sub-alice", "v2"))
+	_, _ = s.Create(t.Context(), sessionFor("sub-carol", "carol")) // no visitor: not in any visitor list
+
+	got, err := s.ListVisitor(t.Context(), "v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hashes(got) != HashID(b1)+","+HashID(a1) {
+		t.Errorf("v1 sessions = %s, want bob then alice", hashes(got))
+	}
+	for _, sess := range got {
+		if sess.Visitor != "v1" || sess.RefreshToken != "" || sess.CSRFToken != "" {
+			t.Errorf("listed session %+v", sess)
+		}
+	}
+	if got, _ := s.ListVisitor(t.Context(), ""); len(got) != 0 {
+		t.Errorf("empty visitor lists %d sessions", len(got))
+	}
+	// Revoked sessions drop out (and their index entries are pruned).
+	if err := s.Delete(t.Context(), a1); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.ListVisitor(t.Context(), "v1"); hashes(got) != HashID(b1) {
+		t.Errorf("after revoke: %s", hashes(got))
+	}
+}
+
+// A refresh rewrites the session; the visitor tag must survive it.
+func TestUpdateKeepsVisitor(t *testing.T) {
+	s, _, _ := newTestStore(t)
+	id, _ := s.Create(t.Context(), visitorSession("sub-alice", "v1"))
+	sess, err := s.Get(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess.Visitor = "forged"
+	sess.Groups = []string{"dev"}
+	if err := s.Update(t.Context(), *sess); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Get(t.Context(), id); got.Visitor != "v1" || got.Groups[0] != "dev" {
+		t.Errorf("after update: visitor %q groups %v", got.Visitor, got.Groups)
+	}
+}

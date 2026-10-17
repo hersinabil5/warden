@@ -190,3 +190,4 @@ func (fakeStore) List(context.Context, int, int) ([]session.Session, int, error)
 func (fakeStore) ListUser(context.Context, string) ([]session.Session, error)    { return nil, nil }
 func (fakeStore) DeleteHash(context.Context, string) error                       { return nil }
 func (fakeStore) RevokeUser(context.Context, string) (int, error)                { return 0, nil }
+func (fakeStore) ListVisitor(context.Context, string) ([]session.Session, error) { return nil, nil }

@@ -1,9 +1,11 @@
 package audit
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 func seqs(es []Entry) string {
@@ -95,5 +97,30 @@ func TestRecentClampsLimit(t *testing.T) {
 	}
 	if got, _ := r.Query(Query{Limit: 1 << 30}); len(got) != MaxQueryLimit {
 		t.Errorf("huge limit gave %d", len(got))
+	}
+}
+
+// Demo mode scopes queries to one visitor; the tag is never serialized.
+func TestQueryByVisitor(t *testing.T) {
+	r := NewRecent(10)
+	for _, v := range []string{"v1", "v2", "v1", ""} {
+		r.Record(t.Context(), Event{Time: time.Unix(1, 0), User: "alice", Visitor: v, Decision: Allow})
+	}
+	got, _ := r.Query(Query{Visitor: "v1", ScopeVisitor: true})
+	if len(got) != 2 {
+		t.Errorf("v1 events = %d, want 2", len(got))
+	}
+	if none, _ := r.Query(Query{Visitor: "", ScopeVisitor: true}); len(none) != 1 {
+		t.Errorf("scoped to no visitor: %d events, want only the untagged one", len(none))
+	}
+	if all, _ := r.Query(Query{}); len(all) != 4 {
+		t.Errorf("unscoped = %d, want 4", len(all))
+	}
+	b, err := json.Marshal(got[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "visitor") || strings.Contains(string(b), "v1") {
+		t.Errorf("visitor tag serialized: %s", b)
 	}
 }

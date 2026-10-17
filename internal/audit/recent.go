@@ -55,6 +55,10 @@ type Query struct {
 	Decision   Decision
 	Before     uint64 // only events with Seq < Before; 0 means from the newest
 	Limit      int
+	// ScopeVisitor limits results to events whose Visitor equals Visitor
+	// (demo mode), including when Visitor is empty.
+	ScopeVisitor bool
+	Visitor      string
 }
 
 // Query returns matching events newest first, and the Before value for the
@@ -92,5 +96,6 @@ func (r *Recent) Query(q Query) ([]Entry, uint64) {
 func (q Query) matches(e Event) bool {
 	return (q.User == "" || e.User == q.User) &&
 		(q.Host == "" || e.Host == q.Host) &&
-		(q.Decision == "" || e.Decision.String() == q.Decision.String())
+		(q.Decision == "" || e.Decision.String() == q.Decision.String()) &&
+		(!q.ScopeVisitor || e.Visitor == q.Visitor)
 }

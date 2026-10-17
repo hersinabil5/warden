@@ -107,6 +107,9 @@ type Options struct {
 	// HSTSMaxAge is the Strict-Transport-Security max-age sent on every
 	// response, proxied or not; zero sends none. Handler serves HTTPS only.
 	HSTSMaxAge time.Duration
+	// VisitorOf tags audit events with the client's demo visitor ID
+	// (demo.Visitors.Of); nil outside demo mode.
+	VisitorOf func(remoteAddr string) string
 	// Landing serves the auth host's root (demo mode); nil leaves it 404.
 	Landing http.Handler
 	// WebSocketRecheck is how often open WebSockets are re-checked; zero
@@ -124,6 +127,7 @@ type Handler struct {
 	identity   Asserter
 	jwks       http.Handler
 	landing    http.Handler
+	visitorOf  func(string) string
 	audit      audit.Recorder
 	admin      *AdminRoute
 	// Admin endpoint limits: per client IP before the session lookup, then
@@ -168,6 +172,7 @@ func New(cfg *config.Config, opts Options) (*Handler, error) {
 		identity:   opts.Identity,
 		jwks:       opts.JWKS,
 		landing:    opts.Landing,
+		visitorOf:  opts.VisitorOf,
 		audit:      opts.Audit,
 		admin:      opts.Admin,
 		hsts:       hstsValue(opts.HSTSMaxAge),
@@ -276,6 +281,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusSwitchingProtocols
 		}
 		if ae.on {
+			visitor := ""
+			if h.visitorOf != nil {
+				visitor = h.visitorOf(r.RemoteAddr)
+			}
 			path := r.URL.Path
 			if ae.rawPath {
 				path = rawPath // rejected: there is no normalized path
@@ -284,7 +293,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				Time: start, RequestID: id, User: ae.user, Session: ae.session,
 				Host: host, Method: r.Method, Path: path,
 				Decision: ae.decision, Rule: ae.rule, Reason: ae.reason,
-				Latency: time.Since(start), Status: status,
+				Latency: time.Since(start), Status: status, Visitor: visitor,
 			})
 		}
 		// Path only: the query string can carry tokens or codes (invariant 9).

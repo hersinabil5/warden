@@ -53,6 +53,9 @@ type Event struct {
 	Reason    string
 	Latency   time.Duration
 	Status    int
+	// Visitor is the demo-mode visitor tag, for scoping admin views. It is
+	// in memory only: never written to a sink or the API.
+	Visitor string
 }
 
 // wireEvent is the JSON schema of an Event.

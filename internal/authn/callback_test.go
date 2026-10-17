@@ -515,3 +515,20 @@ func readBody(t *testing.T, resp *http.Response) string {
 	}
 	return string(body)
 }
+
+// Demo mode tags a new session with the visitor who logged in.
+func TestCallbackTagsVisitor(t *testing.T) {
+	e := newFlowEnv(t)
+	e.h.visitorOf = func(remote string) string { return "tag-of-" + remote }
+	cb, pre := e.begin(t, "")
+	resp := e.serve(t, http.MethodGet, cb, pre)
+	_ = resp.Body.Close()
+	c := cookieNamed(resp, sessionCookie)
+	if c == nil {
+		t.Fatalf("no session cookie (status %d)", resp.StatusCode)
+	}
+	sess, err := e.sessions.Get(t.Context(), c.Value)
+	if err != nil || sess.Visitor != "tag-of-192.0.2.1:1234" {
+		t.Errorf("visitor = %q, %v", sess.Visitor, err)
+	}
+}

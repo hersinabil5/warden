@@ -17,6 +17,10 @@ const allSessionsKey = keyPrefix + "sessions"
 
 func userKey(sub string) string { return keyPrefix + "user:" + sub }
 
+// visitorKey indexes a demo visitor's sessions (D30). Revocation doesn't
+// clean it; ListVisitor prunes dead entries as it finds them.
+func visitorKey(v string) string { return keyPrefix + "visitor:" + v }
+
 // Listing limits.
 const (
 	DefaultListLimit = 50
@@ -32,6 +36,10 @@ func (s *Store) index(ctx context.Context, hash string, sess *Session) error {
 	// The user index outlives each of its sessions by at most the absolute
 	// lifetime of the newest one.
 	pipe.Expire(ctx, userKey(sess.Subject), s.abs)
+	if sess.Visitor != "" {
+		pipe.ZAdd(ctx, visitorKey(sess.Visitor), z)
+		pipe.Expire(ctx, visitorKey(sess.Visitor), s.abs)
+	}
 	if _, err := pipe.Exec(ctx); err != nil {
 		return fmt.Errorf("session store: indexing session: %w", err)
 	}
@@ -146,6 +154,42 @@ func (s *Store) ListUser(ctx context.Context, sub string) ([]Session, error) {
 		return nil, fmt.Errorf("session store: %w", err)
 	}
 	return s.peekAll(ctx, hashes, sub)
+}
+
+// ListVisitor returns a demo visitor's live main sessions, newest first, at
+// most MaxListLimit. It does not count as activity.
+func (s *Store) ListVisitor(ctx context.Context, visitor string) ([]Session, error) {
+	if visitor == "" {
+		return nil, nil
+	}
+	key := visitorKey(visitor)
+	if err := s.prune(ctx, key); err != nil {
+		return nil, err
+	}
+	hashes, err := s.rdb.ZRevRange(ctx, key, 0, MaxListLimit-1).Result()
+	if err != nil {
+		return nil, fmt.Errorf("session store: %w", err)
+	}
+	out, err := s.peekAll(ctx, hashes, "")
+	if err != nil {
+		return nil, err
+	}
+	live := make(map[string]bool, len(out))
+	for _, sess := range out {
+		live[sess.Hash] = true
+	}
+	var dead []any
+	for _, h := range hashes {
+		if !live[h] {
+			dead = append(dead, h)
+		}
+	}
+	if len(dead) > 0 {
+		if err := s.rdb.ZRem(ctx, key, dead...).Err(); err != nil {
+			return nil, fmt.Errorf("session store: %w", err)
+		}
+	}
+	return out, nil
 }
 
 // prune drops index entries created more than the absolute lifetime ago.

@@ -117,6 +117,9 @@ func (fakeSessions) List(context.Context, int, int) ([]session.Session, int, err
 func (fakeSessions) ListUser(context.Context, string) ([]session.Session, error) { return nil, nil }
 func (fakeSessions) DeleteHash(context.Context, string) error                    { return nil }
 func (fakeSessions) RevokeUser(context.Context, string) (int, error)             { return 0, nil }
+func (fakeSessions) ListVisitor(context.Context, string) ([]session.Session, error) {
+	return nil, nil
+}
 
 // The real admin handler, behind the proxy, serves the authenticated
 // session's identity.

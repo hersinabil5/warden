@@ -261,3 +261,14 @@ func TestNewRequiresAudit(t *testing.T) {
 		t.Error("New accepted no audit recorder")
 	}
 }
+
+func TestAuditTagsVisitor(t *testing.T) {
+	h, log, _ := auditHandler(t, aliceSess, Options{VisitorOf: func(remote string) string { return "tag-of-" + remote }})
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
+	req.Host = "whoami.example.test"
+	req.Header.Set("X-Forwarded-For", "203.0.113.9")
+	serve(h, req)
+	if ev := log.only(t); ev.Visitor != "tag-of-192.0.2.1:1234" {
+		t.Errorf("visitor = %q, want the connection's", ev.Visitor)
+	}
+}

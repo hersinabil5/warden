@@ -109,6 +109,9 @@ func (h *Handler) callback(w http.ResponseWriter, r *http.Request) {
 	}
 	sess.RefreshToken = tok.RefreshToken
 	sess.Nonce = pa.Nonce
+	if h.visitorOf != nil {
+		sess.Visitor = h.visitorOf(r.RemoteAddr)
+	}
 
 	// Never adopt a session ID from before login (T2); revoke it instead.
 	if old, cerr := r.Cookie(h.cookieName); cerr == nil && old.Value != "" {

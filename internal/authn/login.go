@@ -36,6 +36,9 @@ type HandlerOptions struct {
 	// status text response.
 	ErrorPage func(w http.ResponseWriter, r *http.Request, code int)
 	Now       func() time.Time
+	// VisitorOf tags new sessions with the client's demo visitor ID
+	// (demo.Visitors.Of); nil outside demo mode.
+	VisitorOf func(remoteAddr string) string
 }
 
 // Handler serves the OIDC endpoints on the auth host.
@@ -59,6 +62,7 @@ type Handler struct {
 	// loginLimit bounds login and callback requests per client IP: each
 	// one costs the IdP a round trip or a code exchange.
 	loginLimit *ratelimit.Limiter
+	visitorOf  func(string) string
 	logger     *slog.Logger
 	errorPage  func(http.ResponseWriter, *http.Request, int)
 	now        func() time.Time
@@ -129,6 +133,7 @@ func NewHandler(cfg *config.Config, p *Provider, opts HandlerOptions) (*Handler,
 		port:            port,
 		sealer:          sealer,
 		loginLimit:      loginLimit,
+		visitorOf:       opts.VisitorOf,
 		logger:          opts.Logger,
 		errorPage:       opts.ErrorPage,
 		now:             opts.Now,

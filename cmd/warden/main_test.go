@@ -1363,3 +1363,40 @@ func TestRunDemoLandingPage(t *testing.T) {
 		t.Errorf("/demo = %d, want 404", r.StatusCode)
 	}
 }
+
+// Demo mode end to end: a signed-in admin's API views are scoped to their
+// visitor, and still show their own session.
+func TestRunDemoScopesAdminViews(t *testing.T) {
+	idp := testidp.New(t)
+	idp.SetClientSecret(testSecret)
+	cfg := strings.Replace(minimalConfig, "routes:", adminSection, 1)
+	cfg = strings.Replace(cfg, "audit:", demoSection, 1)
+	env := newTestEnvWithIdP(t, cfg, idp)
+	startRun(t, "-config", env.path)
+	_, port := splitPort(t, env.httpsAddr)
+	idp.SetUser(func() map[string]any {
+		return map[string]any{"sub": "sub-alice", "preferred_username": "alice", "groups": []string{"admins"},
+			"amr": []string{"pwd", "otp"}, "auth_time": time.Now().Unix()}
+	})
+	alice := browserFor(t, env)
+	if final, hops := browse(t, alice, "https://auth.example.test:"+port+"/.warden/login"); final.StatusCode != http.StatusOK {
+		t.Fatalf("alice login = %d\n%s", final.StatusCode, strings.Join(hops, "\n"))
+	}
+	r := get(t, alice, "https://auth.example.test:"+port+"/.warden/api/sessions")
+	var body struct {
+		Sessions []struct {
+			User    string `json:"user"`
+			Current bool   `json:"current"`
+		} `json:"sessions"`
+	}
+	if err := json.Unmarshal([]byte(r.Body), &body); err != nil || r.StatusCode != http.StatusOK {
+		t.Fatalf("sessions = %d %s", r.StatusCode, r.Body)
+	}
+	if len(body.Sessions) != 1 || !body.Sessions[0].Current || body.Sessions[0].User != "alice" {
+		t.Errorf("demo sessions = %+v, want just alice's own", body.Sessions)
+	}
+	// The visitor tag never reaches the API or the audit sink.
+	if strings.Contains(r.Body, "visitor") {
+		t.Errorf("visitor tag in API output: %s", r.Body)
+	}
+}

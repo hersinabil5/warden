@@ -25,6 +25,7 @@ import (
 	"github.com/hersinabil5/warden/internal/audit"
 	"github.com/hersinabil5/warden/internal/authn"
 	"github.com/hersinabil5/warden/internal/config"
+	"github.com/hersinabil5/warden/internal/demo"
 	"github.com/hersinabil5/warden/internal/identity"
 	"github.com/hersinabil5/warden/internal/policy"
 	"github.com/hersinabil5/warden/internal/proxy"
@@ -156,11 +157,21 @@ func run(ctx context.Context, args []string, logOut, auditOut io.Writer, getenv 
 	if err != nil {
 		return err
 	}
+	// Demo mode: each visitor sees only their own sessions and decisions.
+	var visitorOf func(string) string
+	if cfg.Demo != nil {
+		visitors, verr := demo.NewVisitors()
+		if verr != nil {
+			return verr
+		}
+		visitorOf = visitors.Of
+	}
 	authHandler, err := authn.NewHandler(cfg, provider, authn.HandlerOptions{
 		CookieKey: cookieKey,
 		Sessions:  sessions,
 		Logger:    logger,
 		ErrorPage: proxy.ErrorPage,
+		VisitorOf: visitorOf,
 	})
 	if err != nil {
 		return err
@@ -181,6 +192,7 @@ func run(ctx context.Context, args []string, logOut, auditOut io.Writer, getenv 
 	}
 	handler, err := proxy.New(cfg, proxy.Options{
 		Landing:          landing,
+		VisitorOf:        visitorOf,
 		Identity:         signer,
 		JWKS:             signer.JWKSHandler(),
 		Logger:           logger,
@@ -279,7 +291,7 @@ func newAdminRoute(cfg *config.Config, sessions *session.Store, recent *audit.Re
 		return nil, err
 	}
 	api, err := admin.New(admin.Options{Sessions: sessions, Decisions: recent, AuthOrigin: origin,
-		Dashboard: adminui.Files(), Routes: cfg.Routes, Logger: logger})
+		Dashboard: adminui.Files(), Routes: cfg.Routes, Demo: cfg.Demo != nil, Logger: logger})
 	if err != nil {
 		return nil, err
 	}

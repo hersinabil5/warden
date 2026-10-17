@@ -52,6 +52,9 @@ type Session struct {
 	// Nonce is the login's OIDC nonce, which a refreshed ID token must
 	// repeat if it carries one (OIDC Core 12.2).
 	Nonce string `json:"nonce"`
+	// Visitor is the demo-mode visitor tag of the client that logged in
+	// (demo.Visitors), empty outside demo mode. Set at creation only.
+	Visitor string `json:"visitor,omitempty"`
 	// Hash is the main session's HashID, set on lookup for audit
 	// correlation. It is the storage key, so it is never stored itself.
 	Hash string `json:"-"`
@@ -380,6 +383,7 @@ func (s *Store) Update(ctx context.Context, sess Session) error {
 		return errors.New("session store: update would change the subject")
 	}
 	sess.Created, sess.LastSeen, sess.CSRFToken = stored.Created, stored.LastSeen, stored.CSRFToken
+	sess.Visitor = stored.Visitor
 	return s.write(ctx, sess.Hash, record{Kind: kindMain, Session: &sess}, s.ttl(&sess, s.now()), true)
 }
 

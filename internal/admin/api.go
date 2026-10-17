@@ -37,6 +37,7 @@ type Sessions interface {
 	ListUser(ctx context.Context, sub string) ([]session.Session, error)
 	DeleteHash(ctx context.Context, hash string) error
 	RevokeUser(ctx context.Context, sub string) (int, error)
+	ListVisitor(ctx context.Context, visitor string) ([]session.Session, error)
 }
 
 // Options configures the admin handler.
@@ -50,6 +51,10 @@ type Options struct {
 	Dashboard fs.FS
 	// Routes are shown read-only on the dashboard.
 	Routes []config.Route
+	// Demo scopes every view and revocation to the caller's own visitor
+	// (session.Session.Visitor): in a public demo, visitors share accounts
+	// but must not see or revoke each other (D30).
+	Demo   bool
 	Logger *slog.Logger
 }
 
@@ -63,6 +68,7 @@ type Handler struct {
 	origin    string
 	dashboard fs.FS
 	routeList []routeView
+	demo      bool
 	logger    *slog.Logger
 }
 
@@ -84,6 +90,7 @@ func New(opts Options) (*Handler, error) {
 		origin:    opts.AuthOrigin,
 		dashboard: opts.Dashboard,
 		routeList: routeViews(opts.Routes),
+		demo:      opts.Demo,
 		logger:    opts.Logger,
 	}
 	h.mux.HandleFunc("GET "+APIPrefix+"me", h.me)
@@ -169,9 +176,34 @@ func views(ss []session.Session, current string) []sessionView {
 	return out
 }
 
+// visitorSessions lists the caller's visitor's sessions (demo mode), those
+// of subject sub only when sub is set.
+func (h *Handler) visitorSessions(r *http.Request, sub string) ([]session.Session, error) {
+	all, err := h.sessions.ListVisitor(r.Context(), sessionFrom(r.Context()).Visitor)
+	if err != nil || sub == "" {
+		return all, err
+	}
+	var out []session.Session
+	for _, s := range all {
+		if s.Subject == sub {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
 func (h *Handler) listSessions(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	current := sessionFrom(r.Context()).Hash
+	if h.demo {
+		ss, err := h.visitorSessions(r, q.Get("sub"))
+		if err != nil {
+			h.fail(w, "listing visitor sessions", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"sessions": views(ss, current), "total": len(ss)})
+		return
+	}
 	if sub := q.Get("sub"); sub != "" {
 		ss, err := h.sessions.ListUser(r.Context(), sub)
 		if err != nil {
@@ -206,6 +238,9 @@ func (h *Handler) revokeSession(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &req) {
 		return
 	}
+	if h.demo && !h.ownSession(w, r, req.ID) {
+		return
+	}
 	err := h.sessions.DeleteHash(r.Context(), req.ID)
 	if errors.Is(err, session.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "no such session")
@@ -231,7 +266,11 @@ func (h *Handler) revokeUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "sub is required")
 		return
 	}
-	n, err := h.sessions.RevokeUser(r.Context(), req.Subject)
+	revoke := h.sessions.RevokeUser
+	if h.demo {
+		revoke = h.revokeVisitorUser(r)
+	}
+	n, err := revoke(r.Context(), req.Subject)
 	if err != nil {
 		h.fail(w, "revoking user sessions", err)
 		return
@@ -257,6 +296,13 @@ func (h *Handler) decisions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	query.Limit = limit
+	if h.demo {
+		query.ScopeVisitor, query.Visitor = true, sessionFrom(r.Context()).Visitor
+		if query.Visitor == "" {
+			writeJSON(w, http.StatusOK, map[string]any{"decisions": []audit.Entry{}})
+			return
+		}
+	}
 	if b := q.Get("before"); b != "" {
 		before, err := strconv.ParseUint(b, 10, 64)
 		if err != nil {
@@ -271,6 +317,44 @@ func (h *Handler) decisions(w http.ResponseWriter, r *http.Request) {
 		resp["next_before"] = next
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// ownSession reports whether hash is one of the caller's visitor's sessions,
+// writing a 404 (as for an unknown session) when it is not.
+func (h *Handler) ownSession(w http.ResponseWriter, r *http.Request, hash string) bool {
+	ss, err := h.visitorSessions(r, "")
+	if err != nil {
+		h.fail(w, "listing visitor sessions", err)
+		return false
+	}
+	for _, s := range ss {
+		if s.Hash == hash {
+			return true
+		}
+	}
+	writeError(w, http.StatusNotFound, "no such session")
+	return false
+}
+
+// revokeVisitorUser revokes the subject's sessions of the caller's visitor
+// only (demo mode).
+func (h *Handler) revokeVisitorUser(r *http.Request) func(context.Context, string) (int, error) {
+	return func(ctx context.Context, sub string) (int, error) {
+		ss, err := h.visitorSessions(r, sub)
+		if err != nil {
+			return 0, err
+		}
+		n := 0
+		for _, s := range ss {
+			switch err := h.sessions.DeleteHash(ctx, s.Hash); {
+			case err == nil:
+				n++
+			case !errors.Is(err, session.ErrNotFound):
+				return n, err
+			}
+		}
+		return n, nil
+	}
 }
 
 // mutating guards a state-changing endpoint against CSRF: the request must
