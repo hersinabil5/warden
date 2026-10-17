@@ -1,69 +1,109 @@
 # Threat model
 
-Update this whenever a change adds, removes, or weakens a mitigation.
+What Warden defends against, and how. Each threat has a number (T1, T2, ...) and points to the
+design decision that explains it (D1, D2, ... in [DECISIONS.md](DECISIONS.md)). Update this
+whenever a change adds, removes, or weakens a defense.
 
-## Assets
+## What we're protecting
 
-- Access to internal apps and the data behind them
+- The internal apps behind Warden and their data
 - User sessions and session cookies
-- OIDC client secret; identity-assertion signing key; mTLS client key
-- Audit log integrity
+- Secrets: the OIDC client secret, the key that signs identity tokens, the mTLS client key
+- The audit log
 
-## Trust boundaries
+## Who trusts whom
 
-1. Browser ↔ Warden (internet-facing, untrusted input)
-2. Warden ↔ IdP (Keycloak): trusted for identity, reached over TLS in production
-3. Warden ↔ Redis: trusted, private network
-4. Warden ↔ upstream apps: upstreams trust only Warden (mTLS + signed assertion)
+1. **Browser → Warden:** the internet. Everything from the browser is untrusted.
+2. **Warden → Keycloak:** trusted to say who a user is.
+3. **Warden → Redis:** trusted, on a private network.
+4. **Warden → apps:** the apps trust only Warden (mTLS plus a signed identity token).
 
-## Threats and mitigations
+## Threats and defenses
 
-| # | Threat | Mitigation | Milestone | Status |
-|---|--------|-----------|-----------|--------|
-| T1 | Unauthenticated access to internal apps | Every route request needs a valid app session (login redirect for GET/HEAD, 401 otherwise), then a matching allow rule; default deny, any evaluation problem is a deny, 403 page shows only the request ID (D13, D15) | M1–M3 | done |
-| T2 | Login CSRF / session fixation | Random 256-bit `state`/`nonce` + PKCE S256 in a sealed, host-only, per-login cookie (D9); callback requires the cookie for that state, single-use state in Redis before code exchange, and a fresh session ID with any prior session revoked (D12) | M2 | done |
-| T3 | Token forgery or substitution | Signature via JWKS with pinned asymmetric algs (no `none`/`HS*`, D8); `iss`, `aud`, `exp`; `nonce` bound to the pre-auth cookie; `iat` within the login window; `azp`; `sub` required; groups claim type-checked; unverified email dropped (D12) | M2 | done |
-| T4 | Open redirect via return URL | Return URL must be a literal `https://` URL on a configured route host and Warden's public port; `\`, whitespace, control chars, userinfo and other schemes rejected; redirect goes to a canonical URL rebuilt from the parsed parts; fuzzed (D11) | M2 | done |
-| T5 | Policy bypass via path tricks | Raw request target normalized once before routing, `/.warden/` dispatch, auth and policy; `.`/`..`/`//` resolved; encoded `/` and `\`, `\`, NUL/control characters, bad or overlong UTF-8, double encoding and `;` rejected with 400; the upstream gets exactly the normalized path; prefixes match whole segments; optional case-insensitive matching (D15). Fuzzed | M3 | done |
-| T6 | Identity header spoofing | Every identity header stripped before proxying (built-in list, `X-Warden-*`, `X-Auth-Request-*`, `strip_headers`), matched case-insensitively with `_` folded to `-`; then a signed ES256 assertion per request (`typ`-pinned, `aud` = route host, ≤ 60 s, `jti`), verifiable via the public JWKS (D17) | M4 | done |
-| T7 | Bypassing Warden to reach upstreams directly | mTLS to upstreams: they require Warden's client certificate (internal CA + CN) and Warden trusts only the internal CA for them; every request also needs a valid assertion; dev CA name-constrained to loopback (D18). In the container stack all upstreams are on an internal Docker network with no published ports, verified by `make dev-check` (D25) | M4, M7 | done |
-| T8 | Access persists after user removal | Server-side sessions; admin revocation (D22); groups re-confirmed with the IdP every `group_refresh_interval` via the refresh token, fully validated, and any refresh failure (disabled user, ended IdP session, error) revokes the session (D23) | M5 | done |
-| T9 | Stolen session cookie | Opaque 256-bit IDs, only hashes in Redis; idle + absolute TTL checked on every read; app sessions bound to their host and revoked with the main session (D10). HttpOnly/Secure/SameSite host-only cookies; per-user session index so every session of a user can be found and revoked (D21); admin API revokes one session or all of a user's, effective on the next request (D22) | M2, M5 | done |
-| T10 | Weak authentication on sensitive paths | `require_mfa_within` checks `amr` (two factors or `mfa`) and `auth_time` recency; Keycloak OTP + `amr` mapper in the dev realm (D16); a stale or single-factor login on such a path is sent back to the IdP with `prompt=login` + `max_age=0`, and the new ID token must show an `auth_time` after the step-up began; offered only when re-authenticating can satisfy a rule and the login is over 2 minutes old (no loops); non-GET requests and the admin API get 403 (D15, D28) | M3, M7 | done |
-| T11 | Brute force / abuse of auth endpoints and the admin API | Token-bucket limits per client IP on login + callback, and per IP (before the session lookup) and per session on the admin API; client IP from the connection only (forwarding headers ignored), IPv6 grouped by /64; bounded key table; 429 + `Retry-After`, admin 429s audited; always on. Per process only (D27) | M7 | done |
-| T12 | Secrets leaking via logs | Never log tokens/cookies/codes; hashed identifiers only; client secret held in a self-redacting `config.Secret` and never echoed in config errors | all | partial (config: done) |
-| T13 | Admin dashboard CSRF / XSS | API mutations need same-origin `Sec-Fetch-Site`/`Origin`, a JSON content type, and the session's random CSRF token; strict JSON decoding (D22). Dashboard behind the admin policy with a strict CSP (`script-src`/`style-src 'self'`, no framing); the build is tested to contain no inline code; API responses locked down by CSP too (D24) | M5, M6 | done |
-| T14 | Misconfiguration silently weakens policy | Strict config decoding and validation at startup; ambiguous rules, non-normalized path prefixes, and pathful upstreams rejected (D5) | M1 | done |
-| T15 | Open redirect via HTTP→HTTPS redirect (attacker-set Host) | Redirect only to configured hosts, configured HTTPS port; else 400 (D7) | M1 | done |
-| T16 | Host confusion / domain fronting (SNI ≠ Host) | 421 when TLS ServerName and Host differ (D7) | M1 | done |
-| T17 | Upstream traffic rerouted via `HTTP_PROXY` env | Upstream transport ignores proxy env vars (D6) | M1 | done |
-| T18 | Upstream path shadowing Warden endpoints | `/.warden/` reserved on every host, never proxied (D7) | M1 | done |
-| T19 | Spoofed client IP / host / scheme via `X-Forwarded-*`, `Forwarded`, `X-Real-IP` | Overwritten with values Warden observed (never appended); `Forwarded` and `X-Real-IP` removed; hop-by-hop headers stripped both ways | M1 | done |
-| T20 | Forged or colliding request IDs in logs/audit | Warden always generates the ID; client and upstream values discarded (D7) | M1 | done |
-| T21 | Resource exhaustion (slow-loris clients, hung upstreams) | Server read-header/read/write/idle timeouts; upstream dial/TLS/response-header timeouts (D6) | M1 | done |
-| T22 | Internal details leaked in error responses | Generic error pages with request ID only; causes go to logs | M1 | done |
-| T23 | IdP mix-up or malicious discovery metadata (wrong issuer, http endpoints, no PKCE) | Discovery `issuer` must match exactly; endpoints https-only (loopback excepted), no credentials; S256 and `code` required; JWKS must hold a usable public key and no private/symmetric keys (D8) | M2 | done |
-| T24 | Algorithm downgrade / confusion (`alg: none`, HS256 keyed with the RSA public key) | `auth.id_token_algs` allows asymmetric algs only; verifier pinned to their intersection with the IdP's list (D8) | M2 | done |
-| T25 | Startup hang or traffic redirection on IdP calls | Bounded retry budget; IdP client timeouts, 1 MiB body cap, no proxy env, no redirects (D8) | M2 | done |
-| T26 | Authorize-request tampering via login parameters or Host header (redirect_uri, client_id, scope, response_type, PKCE method) | Authorize URL built only from config and discovery; request query and Host ignored (D9) | M2 | done |
-| T27 | Login CSRF / session swap on app hosts via a forwarded handshake code | Code bound to an app-host `__Host-` cookie (only its hash travels), redeemable once within 30s on the issuing host only; no code issued without a binding (D13) | M2 | done |
-| T28 | Upstream stealing or planting Warden cookies | Warden cookies stripped from requests to upstreams; upstream `Set-Cookie` for Warden names dropped (D13) | M2 | done |
-| T29 | Logout CSRF / forced logout | POST-only logout on the auth host; cross-origin `Origin`/`Sec-Fetch-Site` refused; SameSite=Lax cookie (D14) | M2 | done |
-| T30 | Assertion replay or confusion (token for app A used at app B; ID token passed as an assertion) | `aud` = one route host; explicit `typ` checked by verifiers; 60 s lifetime; ES256 only; `kid` from a published set (D17) | M4 | done |
-| T31 | Undetected or repudiated access (no record of who reached what) | One audit event per request to a route host: user, main session hash prefix, normalized path, allow/deny with rule and reason, status, Warden request ID; pre-policy failures recorded as deny (D19); appended to a 0600 JSONL file or stdout, startup fails without a writable sink, lost events logged at error level (D20) | M5 | done |
-| T33 | Privilege escalation to the admin API | Auth host only, main session, admin policy that config validation forces to name users/groups and require recent MFA; default deny; audited; handler refuses requests without the proxy's session (D22) | M5 | done |
-| T32 | Secrets leaking via the audit log | Events omit query strings, cookies, `Authorization`, tokens; session only as a 12-hex prefix of its hash; tested with planted secrets (D19) | M5 | done |
-| T34 | Clickjacking, MIME sniffing, and referrer leaks on Warden pages | Every Warden response gets `frame-ancestors 'none'` + `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: no-referrer`, COOP, and a default `default-src 'none'` CSP, applied centrally; tested across every endpoint (D26) | M7 | done |
-| T35 | SSL stripping on first visit after a plain-HTTP link | HSTS on every HTTPS response (one year, configurable); upstreams cannot weaken or widen it; never sent over plain HTTP (D26) | M7 | done |
-| T36 | Request smuggling through a protocol upgrade (`Upgrade: h2c`) past per-path policy | Only `Upgrade: websocket` on GET switches; any other upgrade is a 400 and audited; HTTP/2 extended CONNECT off (D29) | M7 | done |
-| T37 | Cross-site WebSocket hijacking (another site or a sibling route riding the user's cookies) | WebSocket `Origin` must be the route's own https origin and port, else 403 (D29) | M7 | done |
-| T38 | Long-lived connections outliving revocation, expiry, or a policy change | Open WebSockets re-checked every `session.websocket_recheck` (default 30 s): session, group refresh, and route policy; any failure, store errors included, closes both ends; no sockets without re-check support (D29) | M7 | done |
-| T39 | Demo visitors seeing or griefing each other (listing, revoking, or watching another visitor's sessions and decisions) | Demo mode tags sessions and audit events with a keyed hash of the client IP; the admin API lists, revokes, and shows only the caller's own visitor; hourly reset of all sessions and the decision view (D30) | M7 | done |
-| T40 | Demo credentials or mode leaking into a real deployment | Demo mode needs an explicit `demo.enabled: true`, logs a startup warning, and shows only the demo section, never other config or secrets (D30) | M7 | done |
+### Getting in without permission
 
-## Out of scope (explicitly not defended)
+| # | Attack | Defense |
+|---|---|---|
+| T1 | Reaching an app without logging in | Every request needs a valid session and a policy rule that allows it. No rule means deny, and any error means deny (D13, D15) |
+| T10 | Using a weak or old login on a sensitive page | Rules can require MFA within N minutes. If the login is too old, Warden sends the user back to log in again with their OTP, and checks that the login really is fresh (D15, D16, D28) |
+| T14 | A config typo quietly weakening a rule | The config is checked strictly at startup: unknown keys, empty rules, and anything ambiguous stop Warden from starting (D5) |
+| T33 | Getting into the admin API | Admin rules must name users or groups and require recent MFA. Admin requests get the same checks and audit as app requests (D22) |
 
-- Compromised IdP: an attacker controlling Keycloak can mint any identity.
-- Compromised user device with a valid session (partially mitigated by short TTLs and revocation; device posture is a stretch goal).
-- Compromised Warden host: it holds the signing key and session store access. Warden is a high-value target and a single point of failure.
-- Vulnerabilities inside upstream apps once a user is legitimately authorized.
+### Login attacks
+
+| # | Attack | Defense |
+|---|---|---|
+| T2 | Login CSRF: tricking a browser into finishing someone else's login | Random `state`, `nonce`, and PKCE, sealed in a cookie only this browser has; `state` can be used once; a fresh session ID after login (D9, D12) |
+| T3 | Forged or swapped login tokens | Every ID token is fully checked: signature, issuer, audience, expiry, issue time, nonce, `azp`, `sub` (D8, D12) |
+| T23 | A fake or misconfigured identity provider | Its discovery document must match the configured issuer exactly, use HTTPS, and support PKCE (D8) |
+| T24 | Algorithm tricks (`alg: none`, HS256 with the public key) | Only the configured asymmetric algorithms are accepted (D8) |
+| T25 | Hanging or redirecting Warden's calls to the identity provider | Timeouts, a size limit, no proxy settings, no redirects, limited retries (D8) |
+| T26 | Tampering with the login request | The login URL is built only from config, never from the request (D9) |
+| T27 | Swapping sessions by forwarding someone a handshake link | Handshake codes only work in the browser that started the login, once, within 30 seconds (D13) |
+| T29 | Forcing a logout from another site | Logout is POST only and refuses cross-site requests (D14) |
+| T11 | Brute force and floods on login and the admin API | Rate limits per IP (and per session for the admin API), using the real connection IP (D27) |
+
+### Stolen or stale sessions
+
+| # | Attack | Defense |
+|---|---|---|
+| T9 | A stolen session cookie | Random 256-bit IDs, only hashes stored, idle and absolute timeouts, host-only cookies, revocable from the dashboard (D2, D10, D21, D22) |
+| T8 | Keeping access after being removed at the identity provider | Groups are re-checked with the identity provider regularly, and any failure logs the user out (D23) |
+| T38 | An open WebSocket outliving a logout or revocation | Open sockets are re-checked every 30 seconds and closed if the session or policy says no (D29) |
+
+### Request tricks
+
+| # | Attack | Defense |
+|---|---|---|
+| T5 | Path tricks to get around a rule (`%2F`, `..`, `\`, `;`) | The path is normalized once, ambiguous paths are rejected, and the app gets exactly the path the policy checked. Fuzz tested (D15) |
+| T4 | Open redirect through the "return to" URL after login | Only HTTPS URLs on Warden's own app hosts are allowed, and Warden redirects to a URL it rebuilt itself. Fuzz tested (D11) |
+| T15 | Open redirect through the HTTP→HTTPS redirect | Only configured hosts are redirected (D7) |
+| T16 | Using a TLS connection for one host to reach another | Warden refuses requests whose host doesn't match the TLS name (D7) |
+| T19 | Faking the client IP or host with `X-Forwarded-*` headers | Warden overwrites them with what it actually saw, and strips hop-by-hop headers |
+| T20 | Faking request IDs in logs | Warden always makes its own request IDs (D7) |
+| T36 | Request smuggling through an `Upgrade: h2c` request | Only `Upgrade: websocket` is allowed (D29) |
+| T37 | Another site opening a WebSocket with the user's cookies | WebSockets must come from the app's own origin (D29) |
+| T18 | An app shadowing Warden's own pages | `/.warden/` is reserved on every host and never passed to apps (D7) |
+
+### Protecting the apps
+
+| # | Attack | Defense |
+|---|---|---|
+| T6 | Sending a fake identity header to an app | Warden deletes all identity headers from the client, then adds its own signed token (D17) |
+| T30 | Reusing an identity token at another app | Each token is for one app only and expires within 60 seconds (D17) |
+| T7 | Skipping Warden and talking to an app directly | The apps sit on an internal network with no open ports, and the example app also requires Warden's mTLS certificate (D18, D25) |
+| T28 | An app stealing or overwriting Warden's cookies | Warden's cookies are removed before requests reach apps, and apps can't set them (D13) |
+| T17 | Rerouting app traffic with a proxy environment variable | Warden ignores `HTTP_PROXY` for app traffic (D6) |
+
+### Browser attacks on Warden's own pages
+
+| # | Attack | Defense |
+|---|---|---|
+| T13 | CSRF or XSS on the admin dashboard | Admin changes need a same-origin request, JSON, and a per-session CSRF token. The dashboard has a strict CSP and a test that it contains no inline code (D22, D24) |
+| T34 | Clickjacking, MIME sniffing, leaking URLs through the referrer | Every Warden page gets anti-framing, `nosniff`, `no-referrer`, and a strict CSP (D26) |
+| T35 | Downgrading to plain HTTP (SSL stripping) | HSTS on every HTTPS response (D26) |
+
+### Leaks and availability
+
+| # | Attack | Defense |
+|---|---|---|
+| T12 | Secrets showing up in logs | Tokens, cookies, and codes are never logged; only short hashes are. The client secret hides itself when printed. **Status: partly done** (config secrets are covered) |
+| T32 | Secrets showing up in the audit log | Audit events leave out query strings, cookies, and tokens. Tested with planted secrets (D19) |
+| T22 | Internal details in error pages | Users only see a generic page with a request ID; details go to the logs |
+| T21 | Slow clients or hung apps tying up Warden | Timeouts on every connection, in both directions (D6) |
+| T31 | Access with no record of who did what | Every request to an app is logged with the user, path, decision, and reason. Warden won't start without a working audit log (D19, D20) |
+
+### Public demo
+
+| # | Attack | Defense |
+|---|---|---|
+| T39 | Demo visitors seeing or kicking out each other | Each visitor only sees and revokes their own sessions; everything resets hourly (D30) |
+| T40 | Demo mode or demo passwords ending up in a real deployment | Demo mode needs an explicit `enabled: true`, logs a loud warning, and only shows the demo section of the config (D30) |
+
+## Not defended (out of scope)
+
+- **A hacked identity provider.** Whoever controls Keycloak can log in as anyone.
+- **A hacked user device** with a valid session. Short timeouts and revocation limit the damage.
+- **A hacked Warden server.** It holds the signing key and access to the session store, so it's
+  a high-value target and a single point of failure.
+- **Bugs inside the apps** once a user is allowed in.
