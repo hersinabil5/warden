@@ -152,3 +152,7 @@ admin API. The login flow is tested end to end against a fake identity provider.
 
 This is a learning and portfolio project. I built it carefully, but it hasn't been audited, so
 please don't put it in front of anything important.
+
+## License
+
+[MIT](LICENSE)
