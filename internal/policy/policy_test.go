@@ -302,6 +302,11 @@ func FuzzEvaluate(f *testing.F) {
 			if d.Reason == "" || d.Rule == "" {
 				t.Fatalf("decision without rule or reason: %+v", d)
 			}
+			// A step-up is only ever offered for a deny, to an admin, on
+			// the /admin rule: logging in again can't change groups.
+			if d.StepUp && (d.Allow || group != "admins") {
+				t.Fatalf("step-up offered wrongly on %q: %+v", path, d)
+			}
 			if !d.Allow {
 				continue
 			}

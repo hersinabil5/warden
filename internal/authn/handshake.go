@@ -81,7 +81,27 @@ func (h *Handler) Authenticate(w http.ResponseWriter, r *http.Request, host stri
 		h.errorPage(w, r, http.StatusUnauthorized)
 		return nil, false
 	}
+	h.loginRedirect(w, r, host, false)
+	return nil, false
+}
 
+// StepUp implements proxy.StepUpper: the session is valid but the policy
+// wants a fresher multi-factor login. GET and HEAD go back through login with
+// forced re-authentication and return to the same URL; other methods get a
+// 403, since a request body can't survive the round trip.
+func (h *Handler) StepUp(w http.ResponseWriter, r *http.Request, host string) {
+	w.Header().Set("Cache-Control", "no-store")
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		h.errorPage(w, r, http.StatusForbidden)
+		return
+	}
+	h.loginRedirect(w, r, host, true)
+}
+
+// loginRedirect sends the browser from an app host to login on the auth
+// host, bound to this browser by the handshake cookie, returning to the
+// requested URL.
+func (h *Handler) loginRedirect(w http.ResponseWriter, r *http.Request, host string, stepUp bool) {
 	// Reuse the browser's binding if it has one, so parallel requests do
 	// not each plant a cookie.
 	binding := ""
@@ -91,7 +111,7 @@ func (h *Handler) Authenticate(w http.ResponseWriter, r *http.Request, host stri
 		v, rerr := randomToken()
 		if rerr != nil {
 			h.fail(w, r, "generating handshake binding", rerr)
-			return nil, false
+			return
 		}
 		binding = v
 		http.SetCookie(w, &http.Cookie{
@@ -105,8 +125,10 @@ func (h *Handler) Authenticate(w http.ResponseWriter, r *http.Request, host stri
 		rd = origin(host, h.port) + "/"
 	}
 	q := url.Values{"rd": {rd}, "hs": {s256(binding)}}
+	if stepUp {
+		q.Set(stepUpParam, "1")
+	}
 	http.Redirect(w, r, origin(h.authDomain, h.port)+LoginPath+"?"+q.Encode(), http.StatusFound)
-	return nil, false
 }
 
 // continueTo sends a signed-in browser on from the auth host: to the session

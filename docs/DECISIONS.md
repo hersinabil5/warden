@@ -718,3 +718,39 @@ each allow the full rate (M8 would move the buckets to Redis). Many users behind
 login bucket; burst 10 covers a few people signing in at once. In the local Docker stack, Docker's
 port proxy can make every local client appear as the bridge gateway address, so they share one
 bucket; that's harmless in dev, and published ports on a public host keep real client addresses.
+
+## D28: Step-up re-authentication
+
+**Context:** `require_mfa_within` denied a stale or single-factor login with a 403, and the only
+way forward was to log out and in again. PLAN.md M7 asks for a re-authentication at the IdP that
+returns to the original URL.
+
+**Decision:**
+- **When:** the policy sets `Decision.StepUp` on a deny where some rule fails only on its MFA
+  condition (no second factor, no `auth_time`, or too old), every other condition (users, groups,
+  email domains) already holds, and the current login is more than `StepUpGrace` (2 minutes) old.
+  Re-authenticating can't change group membership, so a non-admin never gets a step-up for an
+  admin path; an `auth_time` in the future is a clock problem, not a reason to log in again.
+- **No loops:** a login younger than the grace period may be the step-up itself. If it still falls
+  short (the user has no second factor), they get a plain 403 instead of another trip to the IdP.
+- **How:** route hosts reuse the normal login redirect (bound handshake, `rd` = the original URL)
+  with `step_up=1`. A step-up login skips the "already signed in" shortcut and sends
+  `prompt=login` and `max_age=0`, standard OIDC that makes the IdP authenticate again even with a
+  live session (Keycloak runs its whole browser flow, OTP included) and report `auth_time`. Fresh
+  state, nonce and PKCE as for any login; `step_up` must be exactly `1`.
+- **Proof:** the step-up is recorded in the sealed pre-auth cookie, and the callback then requires
+  the ID token's `auth_time` to be at or after the moment the step-up started (minus the usual
+  one-minute skew). An IdP that ignored `prompt=login` and returned the old login is refused,
+  which also closes the other loop (stale login, step-up, same stale login).
+- The callback creates a new session as for every login, revoking the old one (D12).
+- **Only GET/HEAD navigations.** A POST's body can't survive the round trip, so other methods get
+  403; so does the admin API (a `fetch()` can't follow a login). A dashboard page steps up too, but
+  lands on the session page, because return URLs are route hosts only (invariant 5).
+- Audited as a deny with reason `step-up required` and the response status (302).
+- **Not used: `acr_values`.** It needs a level-of-assurance mapping configured in the IdP;
+  `prompt=login` + `max_age=0` works with Keycloak's normal OTP flow and any compliant IdP. The
+  policy still judges the result by `amr` and `auth_time`, not by what was requested.
+
+**Consequences:** A step-up costs a full login, and afterwards other app hosts redo a (silent)
+handshake because the main session was replaced. An app that needs fresh MFA for a POST must have
+the user load a page under the protected path first.

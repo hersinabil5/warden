@@ -152,6 +152,13 @@ func (h *Handler) verifyIDToken(r *http.Request, raw string, pa preAuth) (*sessi
 	case time.Unix(*c.IssuedAt, 0).Before(started.Add(-clockSkew)):
 		return nil, errors.New("iat before this login started")
 	}
+	// A step-up asked the IdP to authenticate again (prompt=login, max_age=0).
+	// Only a login made after the step-up started proves it did; an older
+	// auth_time means it reused its session, and accepting that would also
+	// send the browser straight back into another step-up.
+	if pa.StepUp && (c.AuthTime == nil || time.Unix(*c.AuthTime, 0).Before(started.Add(-clockSkew))) {
+		return nil, errors.New("step-up: user not re-authenticated (auth_time missing or before the step-up)")
+	}
 	clientID := h.oauth.ClientID
 	if (len(idt.Audience) > 1 && c.AZP != clientID) || (c.AZP != "" && c.AZP != clientID) {
 		return nil, errors.New("azp does not match client")

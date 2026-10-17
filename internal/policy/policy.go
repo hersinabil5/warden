@@ -37,7 +37,16 @@ type Decision struct {
 	Allow  bool
 	Rule   string // the rule that allowed, or the rule set that denied
 	Reason string
+	// StepUp is set on a deny that a fresh multi-factor login would turn
+	// into an allow: some rule fails only on require_mfa_within, and the
+	// current login is older than StepUpGrace.
+	StepUp bool
 }
+
+// StepUpGrace is how old a login must be before a step-up is offered. A
+// login younger than this may be the step-up itself; if it still falls
+// short (no second factor enrolled), prompting again would loop.
+const StepUpGrace = 2 * time.Minute
 
 // Policy is a compiled route policy. The zero value denies everything.
 type Policy struct {
@@ -172,15 +181,19 @@ func (p *Policy) Evaluate(in Input) Decision {
 
 	rs := p.ruleSetFor(in.Path)
 	var failures []string
+	mfaOnly := false
 	for i, r := range rs.rules {
 		ruleName := fmt.Sprintf("%s[%d]", rs.ruleName(), i)
-		if why := r.mismatch(in.Subject, in.Now); why != "" {
+		if why, fixable := r.mismatch(in.Subject, in.Now); why != "" {
 			failures = append(failures, ruleName+": "+why)
+			mfaOnly = mfaOnly || fixable
 			continue
 		}
 		return Decision{Allow: true, Rule: ruleName, Reason: "matched"}
 	}
-	return Decision{Rule: rs.name, Reason: "no allow rule matched (" + strings.Join(failures, "; ") + ")"}
+	stale := in.Subject.AuthTime.IsZero() || in.Now.Sub(in.Subject.AuthTime) > StepUpGrace
+	return Decision{Rule: rs.name, Reason: "no allow rule matched (" + strings.Join(failures, "; ") + ")",
+		StepUp: mfaOnly && stale}
 }
 
 func (rs ruleSet) ruleName() string {
@@ -226,33 +239,34 @@ func splitPath(p string) []string {
 }
 
 // mismatch returns why s does not satisfy r, or "" if it does. All of a
-// rule's conditions must hold.
-func (r rule) mismatch(s *Subject, now time.Time) string {
+// rule's conditions must hold. fixable reports that only the MFA condition
+// failed, in a way a fresh multi-factor login would fix.
+func (r rule) mismatch(s *Subject, now time.Time) (why string, fixable bool) {
 	switch {
 	case r.users != nil && !slices.Contains(r.users, s.Username):
-		return "user not listed"
+		return "user not listed", false
 	case r.groups != nil && !slices.ContainsFunc(s.Groups, func(g string) bool { return slices.Contains(r.groups, g) }):
-		return "not in a listed group"
+		return "not in a listed group", false
 	case r.emailDomains != nil && !slices.Contains(r.emailDomains, emailDomain(s.Email)):
-		return "email domain not allowed"
+		return "email domain not allowed", false
 	case r.mfaWithin > 0:
 		return mfaMismatch(s, now, r.mfaWithin)
 	}
-	return ""
+	return "", false
 }
 
-func mfaMismatch(s *Subject, now time.Time, within time.Duration) string {
+func mfaMismatch(s *Subject, now time.Time, within time.Duration) (string, bool) {
 	switch {
 	case !isMFA(s.AMR):
-		return "no multi-factor authentication"
+		return "no multi-factor authentication", !s.AuthTime.After(now.Add(authTimeSkew))
 	case s.AuthTime.IsZero():
-		return "no auth_time"
+		return "no auth_time", true
 	case s.AuthTime.After(now.Add(authTimeSkew)):
-		return "auth_time in the future"
+		return "auth_time in the future", false // a clock problem; a login won't fix it
 	case now.Sub(s.AuthTime) > within:
-		return "authentication too old"
+		return "authentication too old", true
 	}
-	return ""
+	return "", false
 }
 
 // emailDomain returns the lowercased domain of a single-@ address, or "".

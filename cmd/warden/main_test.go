@@ -1149,3 +1149,83 @@ func TestRunRateLimitsLogin(t *testing.T) {
 		t.Error("429 page lacks the security headers")
 	}
 }
+
+// stepUpConfig protects /admin with groups admins + MFA within 10 minutes.
+func stepUpConfig(upstream string) string {
+	cfg := strings.Replace(minimalConfig, "http://127.0.0.1:9001", upstream, 1)
+	return strings.Replace(cfg, "        - authenticated: true", `        - authenticated: true
+      paths:
+        - prefix: /admin
+          allow:
+            - groups: [admins]
+              require_mfa_within: 10m`, 1)
+}
+
+// PLAN.md M7 acceptance: an MFA-protected path with a stale login sends the
+// user back to the IdP, then succeeds on the original URL.
+func TestRunStepUpMFA(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "upstream saw "+r.URL.Path) //nolint:gosec // G705: test upstream echoing its path
+	}))
+	defer upstream.Close()
+	idp := testidp.New(t)
+	idp.SetClientSecret(testSecret)
+	env := newTestEnvWithIdP(t, stepUpConfig(upstream.URL), idp)
+	startRun(t, "-config", env.path)
+	_, port := splitPort(t, env.httpsAddr)
+	b := browserFor(t, env)
+
+	// Signed in an hour ago with password and OTP: fine for the app, too
+	// old for /admin.
+	idp.SetUser(func() map[string]any {
+		return map[string]any{"amr": []string{"pwd", "otp"}, "auth_time": time.Now().Add(-time.Hour).Unix()}
+	})
+	if final, hops := browse(t, b, "https://app.example.test:"+port+"/"); final.StatusCode != http.StatusOK {
+		t.Fatalf("app = %d\n%s", final.StatusCode, strings.Join(hops, "\n"))
+	}
+	// The IdP authenticates again (fresh auth_time) when asked to.
+	idp.SetUser(func() map[string]any { return map[string]any{"amr": []string{"pwd", "otp"}} })
+	final, hops := browse(t, b, "https://app.example.test:"+port+"/admin/x")
+	if final.StatusCode != http.StatusOK || final.Body != "upstream saw /admin/x" {
+		t.Fatalf("/admin after step-up = %d %q\n%s", final.StatusCode, final.Body, strings.Join(hops, "\n"))
+	}
+	if q := idp.LastAuthorize(); q.Get("prompt") != "login" || q.Get("max_age") != "0" {
+		t.Errorf("step-up authorize query %v, want prompt=login and max_age=0", q)
+	}
+	if !strings.Contains(strings.Join(hops, "\n"), "step_up=1") {
+		t.Errorf("no step-up in the hops:\n%s", strings.Join(hops, "\n"))
+	}
+}
+
+// A user with no second factor re-authenticates once, then gets a 403: no
+// redirect loop.
+func TestRunStepUpWithoutOTPDoesNotLoop(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "upstream")
+	}))
+	defer upstream.Close()
+	idp := testidp.New(t)
+	idp.SetClientSecret(testSecret)
+	env := newTestEnvWithIdP(t, stepUpConfig(upstream.URL), idp)
+	startRun(t, "-config", env.path)
+	_, port := splitPort(t, env.httpsAddr)
+	b := browserFor(t, env)
+
+	idp.SetUser(func() map[string]any {
+		return map[string]any{"amr": []string{"pwd"}, "auth_time": time.Now().Add(-time.Hour).Unix()}
+	})
+	browse(t, b, "https://app.example.test:"+port+"/")
+	idp.SetUser(func() map[string]any { return map[string]any{"amr": []string{"pwd"}} }) // fresh, still no OTP
+	before := idp.TokenHits()
+	final, hops := browse(t, b, "https://app.example.test:"+port+"/admin")
+	if final.StatusCode != http.StatusForbidden || strings.Contains(final.Body, "upstream") {
+		t.Fatalf("/admin = %d\n%s", final.StatusCode, strings.Join(hops, "\n"))
+	}
+	if n := idp.TokenHits() - before; n != 1 {
+		t.Errorf("logins during the step-up = %d, want exactly 1\n%s", n, strings.Join(hops, "\n"))
+	}
+	// Asking again right away doesn't bounce to the IdP either.
+	if again := get(t, b, "https://app.example.test:"+port+"/admin"); again.StatusCode != http.StatusForbidden {
+		t.Errorf("second /admin = %d, want 403", again.StatusCode)
+	}
+}

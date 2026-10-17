@@ -236,8 +236,14 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	stepUp, ok := h.stepUp(w, r)
+	if !ok {
+		return
+	}
 	// Already signed in on the auth host: no IdP round trip (single sign-on).
-	if c, err := r.Cookie(h.cookieName); err == nil && c.Value != "" {
+	// A step-up exists to make the user authenticate again, so it never
+	// takes this shortcut.
+	if c, err := r.Cookie(h.cookieName); !stepUp && err == nil && c.Value != "" {
 		_, gerr := h.sessions.Get(r.Context(), c.Value)
 		switch {
 		case gerr == nil:
@@ -253,7 +259,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, "generating login state", err)
 		return
 	}
-	pa.ReturnTo, pa.Binding = returnTo, binding
+	pa.ReturnTo, pa.Binding, pa.StepUp = returnTo, binding, stepUp
 	name := preAuthCookieName(pa.State)
 	value, err := h.sealer.seal(name, pa)
 	if err != nil {
@@ -270,11 +276,17 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 	})
 
-	authURL := h.oauth.AuthCodeURL(pa.State, oidc.Nonce(pa.Nonce), oauth2.S256ChallengeOption(pa.Verifier))
+	opts := []oauth2.AuthCodeOption{oidc.Nonce(pa.Nonce), oauth2.S256ChallengeOption(pa.Verifier)}
+	if stepUp {
+		// Standard OIDC: authenticate again even with a live IdP session,
+		// and report auth_time (which max_age makes mandatory).
+		opts = append(opts, oauth2.SetAuthURLParam("prompt", "login"), oauth2.SetAuthURLParam("max_age", "0"))
+	}
+	authURL := h.oauth.AuthCodeURL(pa.State, opts...)
 	hdr := w.Header()
 	hdr.Set("Cache-Control", "no-store")
 	hdr.Set("Referrer-Policy", "no-referrer")
-	h.logger.Info("login started", "request_id", requestID(w), "state_hash", hashPrefix(pa.State))
+	h.logger.Info("login started", "request_id", requestID(w), "state_hash", hashPrefix(pa.State), "step_up", stepUp)
 	http.Redirect(w, r, authURL, http.StatusFound)
 }
 
@@ -308,6 +320,23 @@ func (h *Handler) binding(w http.ResponseWriter, r *http.Request, returnTo strin
 	h.logger.Warn("rejected handshake binding", "request_id", requestID(w))
 	h.errorPage(w, r, http.StatusBadRequest)
 	return "", false
+}
+
+// stepUpParam on a login request asks for forced re-authentication.
+const stepUpParam = "step_up"
+
+// stepUp reads the optional step_up parameter: absent, or exactly "1". On
+// anything else it writes a 400 and returns false.
+func (h *Handler) stepUp(w http.ResponseWriter, r *http.Request) (bool, bool) {
+	switch vs := r.URL.Query()[stepUpParam]; {
+	case len(vs) == 0:
+		return false, true
+	case len(vs) == 1 && vs[0] == "1":
+		return true, true
+	}
+	h.logger.Warn("rejected step-up parameter", "request_id", requestID(w))
+	h.errorPage(w, r, http.StatusBadRequest)
+	return false, false
 }
 
 func (h *Handler) fail(w http.ResponseWriter, r *http.Request, what string, err error) {

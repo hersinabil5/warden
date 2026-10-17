@@ -50,6 +50,16 @@ type Authenticator interface {
 	Authenticate(w http.ResponseWriter, r *http.Request, host string) (*session.Session, bool)
 }
 
+// StepUpper is an Authenticator that can send a signed-in user back to the
+// IdP for a fresh multi-factor login when the policy asks for one
+// (policy.Decision.StepUp). It writes the whole response.
+type StepUpper interface {
+	StepUp(w http.ResponseWriter, r *http.Request, host string)
+}
+
+// stepUpReason is the audit reason for a deny answered with a step-up.
+const stepUpReason = "step-up required"
+
 // MainAuthenticator finds the auth host's main session for a request; nil
 // without error means none.
 type MainAuthenticator interface {
@@ -387,7 +397,12 @@ func (h *Handler) route(w http.ResponseWriter, r *http.Request, host, id string,
 		// The rule and reason go to the log only; the client sees a generic
 		// 403 page with the request ID.
 		h.logger.Info("access denied", "request_id", id, "host", host, "path", r.URL.Path,
-			"user", username(sess), "rule", d.Rule, "reason", d.Reason)
+			"user", username(sess), "rule", d.Rule, "reason", d.Reason, "step_up", d.StepUp)
+		if su, ok := h.authn.(StepUpper); ok && d.StepUp {
+			ae.reason = stepUpReason
+			su.StepUp(w, r, host)
+			return
+		}
 		writePage(w, http.StatusForbidden, id)
 		return
 	}
@@ -463,7 +478,15 @@ func (h *Handler) serveAdmin(w http.ResponseWriter, r *http.Request, id string, 
 	ae.deny(d.Rule, d.Reason)
 	if !d.Allow {
 		h.logger.Info("admin access denied", "request_id", id, "path", r.URL.Path,
-			"user", sess.Username, "rule", d.Rule, "reason", d.Reason)
+			"user", sess.Username, "rule", d.Rule, "reason", d.Reason, "step_up", d.StepUp)
+		// Only a page navigation can go through the IdP; it lands on the
+		// session page, since return URLs are route hosts only (D28).
+		if page && d.StepUp && h.admin.LoginPath != "" {
+			ae.reason = stepUpReason
+			w.Header().Set("Cache-Control", "no-store")
+			http.Redirect(w, r, h.admin.LoginPath+"?step_up=1", http.StatusFound)
+			return
+		}
 		fail(http.StatusForbidden)
 		return
 	}

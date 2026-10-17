@@ -72,7 +72,7 @@ routes:
         - prefix: /admin          # longest matching prefix wins; its rules replace the route's
           allow:
             - groups: [admins]
-              require_mfa_within: 10m
+              require_mfa_within: 10m   # older (or no OTP): browsers are sent back to log in again (step-up)
       case_insensitive_paths: false   # true for upstreams that treat /ADMIN as /admin
 
   - host: app.warden.localhost

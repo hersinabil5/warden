@@ -33,6 +33,9 @@ type preAuth struct {
 	Expires  int64  `json:"e"`           // Unix seconds
 	ReturnTo string `json:"r,omitempty"` // validated return URL; empty means the auth host's session page
 	Binding  string `json:"b,omitempty"` // hash of the app host's handshake cookie (D13)
+	// StepUp marks a forced re-authentication: the ID token must show a
+	// login made after this one started (D28).
+	StepUp bool `json:"u,omitempty"`
 }
 
 // newPreAuth returns fresh random login state: 256-bit state and nonce from
