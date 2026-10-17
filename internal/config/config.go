@@ -26,7 +26,13 @@ type Config struct {
 type TLS struct {
 	CertFile string `yaml:"cert_file"`
 	KeyFile  string `yaml:"key_file"`
+	// HSTSMaxAge is the Strict-Transport-Security max-age on every HTTPS
+	// response. Unset means DefaultHSTSMaxAge; 0 turns HSTS off.
+	HSTSMaxAge *time.Duration `yaml:"hsts_max_age"`
 }
+
+// DefaultHSTSMaxAge is one year, the common baseline.
+const DefaultHSTSMaxAge = 365 * 24 * time.Hour
 
 type Auth struct {
 	Domain               string        `yaml:"domain"` // central auth host; lowercased

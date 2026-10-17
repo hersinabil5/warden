@@ -655,3 +655,29 @@ Warden's container it's that container.
 **Consequences:** Keycloak sets its login cookies `Secure` even over http; browsers accept that on
 `*.localhost` (a secure context), curl does not, so scripted logins need a real browser. Recreating
 the Keycloak container resets its dev database (OTP enrollments included).
+
+## D26: Security headers
+
+**Context:** Warden writes its own pages (errors, login redirects, the session page, the admin
+dashboard and API, JWKS, healthz) and proxies everything else. Each page set its own headers, and
+the generic error page could be framed (`default-src` does not cover `frame-ancestors`).
+
+**Decision:**
+- **One set for every Warden response,** applied by the proxy before any handler runs:
+  `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` (login and handshake URLs
+  carry state and codes), `X-Frame-Options: DENY` and CSP `frame-ancestors 'none'` (clickjacking),
+  `Cross-Origin-Opener-Policy: same-origin`, and a default CSP of `default-src 'none';
+  frame-ancestors 'none'`. Pages that render more (session page, dashboard) replace the CSP with
+  their own, which keeps `frame-ancestors 'none'`. New endpoints get the set without opting in.
+- **Proxied responses are the app's.** The set is removed just before a request goes upstream, so
+  Grafana and friends keep their own framing and CSP rules. Warden doesn't invent headers for them.
+- **HSTS on every HTTPS response, proxied or not.** Warden terminates TLS for all its hosts, so
+  it alone decides their HSTS policy: an upstream's `Strict-Transport-Security` is dropped, so an
+  app can neither turn it off (`max-age=0`) nor widen it (`includeSubDomains; preload` could lock
+  out unrelated sibling hosts). Default `max-age` one year (`tls.hsts_max_age`, `0s` turns it
+  off); Warden never adds `includeSubDomains` or `preload`. Never sent on the plain-HTTP redirect
+  listener, where it is meaningless and forbidden (RFC 6797 section 7.2).
+
+**Consequences:** A browser that has seen a Warden host keeps using HTTPS for it for a year. If a
+deployment ever has to serve plain HTTP on that name, it must first ship `hsts_max_age: 0s` and
+wait out the old max-age.

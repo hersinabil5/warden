@@ -93,6 +93,9 @@ type Options struct {
 	Audit audit.Recorder
 	// Admin serves the admin endpoints; nil leaves them 404.
 	Admin *AdminRoute
+	// HSTSMaxAge is the Strict-Transport-Security max-age sent on every
+	// response, proxied or not; zero sends none. Handler serves HTTPS only.
+	HSTSMaxAge time.Duration
 }
 
 // Handler routes requests by Host to upstream reverse proxies.
@@ -105,6 +108,7 @@ type Handler struct {
 	jwks       http.Handler
 	audit      audit.Recorder
 	admin      *AdminRoute
+	hsts       string // Strict-Transport-Security value; "" for off
 	now        func() time.Time
 	logger     *slog.Logger
 }
@@ -123,6 +127,9 @@ func New(cfg *config.Config, opts Options) (*Handler, error) {
 	if opts.Audit == nil {
 		return nil, errors.New("no audit recorder")
 	}
+	if opts.HSTSMaxAge < 0 {
+		return nil, errors.New("negative HSTS max-age")
+	}
 	if a := opts.Admin; a != nil && (a.Handler == nil || a.Policy == nil || a.Sessions == nil) {
 		return nil, errors.New("admin route needs a handler, a policy, and a session lookup")
 	}
@@ -139,6 +146,7 @@ func New(cfg *config.Config, opts Options) (*Handler, error) {
 		jwks:       opts.JWKS,
 		audit:      opts.Audit,
 		admin:      opts.Admin,
+		hsts:       hstsValue(opts.HSTSMaxAge),
 		now:        opts.Now,
 		logger:     opts.Logger,
 	}
@@ -181,6 +189,9 @@ func New(cfg *config.Config, opts Options) (*Handler, error) {
 				// ServeHTTP already set Warden's ID on the response; drop any
 				// value the upstream sent so the client sees exactly one.
 				res.Header.Del(RequestIDHeader)
+				// Warden terminates TLS for this host and alone decides its
+				// HSTS policy; an app cannot turn it off or widen it.
+				res.Header.Del(hstsHeader)
 				stripSetCookies(res.Header, cookies)
 				return nil
 			},
@@ -199,6 +210,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	id := newRequestID()
 	r = r.WithContext(withRequestID(r.Context(), id))
 	w.Header().Set(RequestIDHeader, id)
+	if h.hsts != "" {
+		w.Header().Set(hstsHeader, h.hsts)
+	}
+	// Until route hands the request to an upstream, the response is Warden's.
+	setPageHeaders(w.Header())
 
 	host := hostOnly(r.Host)
 	rec := &statusRecorder{ResponseWriter: w}
@@ -376,6 +392,7 @@ func (h *Handler) route(w http.ResponseWriter, r *http.Request, host, id string,
 		return
 	}
 	ae.decision = audit.Allow
+	clearPageHeaders(w.Header())
 	rt.proxy.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), assertionKey{}, tok)))
 }
 

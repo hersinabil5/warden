@@ -37,8 +37,7 @@ func writePage(w http.ResponseWriter, code int, requestID string) {
 	h := w.Header()
 	h.Set("Content-Type", "text/html; charset=utf-8")
 	h.Set("Cache-Control", "no-store")
-	h.Set("X-Content-Type-Options", "nosniff")
-	h.Set("Content-Security-Policy", "default-src 'none'")
+	setPageHeaders(h)
 	w.WriteHeader(code)
 	_ = pageTemplate.Execute(w, struct {
 		Code                      int

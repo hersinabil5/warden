@@ -180,6 +180,7 @@ func run(ctx context.Context, args []string, logOut, auditOut io.Writer, getenv 
 		CookieNames:   authn.CookieNames(cfg.Session.CookieName),
 		Audit:         audit.Multi(sink, recent),
 		Admin:         adminRoute,
+		HSTSMaxAge:    *cfg.TLS.HSTSMaxAge, // set by config validation
 	})
 	if err != nil {
 		return err

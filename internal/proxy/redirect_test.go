@@ -133,3 +133,17 @@ func TestRedirectErrorPageHasRequestID(t *testing.T) {
 		t.Errorf("request ID %q missing from header or body:\n%s", id, rec.Body.String())
 	}
 }
+
+// HSTS over plain HTTP is ignored by browsers and forbidden by RFC 6797
+// (section 7.2); the redirect listener never sends it.
+func TestRedirectSendsNoHSTS(t *testing.T) {
+	for _, host := range []string{"app.example.test", "evil.example"} {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
+		req.Host = host
+		rec := httptest.NewRecorder()
+		newTestRedirect().ServeHTTP(rec, req)
+		if got := rec.Header().Values("Strict-Transport-Security"); len(got) != 0 {
+			t.Errorf("%s: Strict-Transport-Security = %q over plain HTTP", host, got)
+		}
+	}
+}

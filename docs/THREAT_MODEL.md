@@ -53,6 +53,8 @@ Update this whenever a change adds, removes, or weakens a mitigation.
 | T31 | Undetected or repudiated access (no record of who reached what) | One audit event per request to a route host: user, main session hash prefix, normalized path, allow/deny with rule and reason, status, Warden request ID; pre-policy failures recorded as deny (D19); appended to a 0600 JSONL file or stdout, startup fails without a writable sink, lost events logged at error level (D20) | M5 | done |
 | T33 | Privilege escalation to the admin API | Auth host only, main session, admin policy that config validation forces to name users/groups and require recent MFA; default deny; audited; handler refuses requests without the proxy's session (D22) | M5 | done |
 | T32 | Secrets leaking via the audit log | Events omit query strings, cookies, `Authorization`, tokens; session only as a 12-hex prefix of its hash; tested with planted secrets (D19) | M5 | done |
+| T34 | Clickjacking, MIME sniffing, and referrer leaks on Warden pages | Every Warden response gets `frame-ancestors 'none'` + `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: no-referrer`, COOP, and a default `default-src 'none'` CSP, applied centrally; tested across every endpoint (D26) | M7 | done |
+| T35 | SSL stripping on first visit after a plain-HTTP link | HSTS on every HTTPS response (one year, configurable); upstreams cannot weaken or widen it; never sent over plain HTTP (D26) | M7 | done |
 
 ## Out of scope (explicitly not defended)
 

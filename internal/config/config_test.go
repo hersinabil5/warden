@@ -156,6 +156,28 @@ func TestParseAllowsLocalHTTPIssuer(t *testing.T) {
 	}
 }
 
+func TestParseHSTSMaxAge(t *testing.T) {
+	for _, tt := range []struct {
+		name, set string
+		want      time.Duration
+	}{
+		{"default when unset", "", DefaultHSTSMaxAge},
+		{"explicit", "\n  hsts_max_age: 720h", 720 * time.Hour},
+		{"zero turns it off", "\n  hsts_max_age: 0s", 0},
+	} {
+		cfg, err := Parse([]byte(edit(t, "  key_file: key.pem", "  key_file: key.pem"+tt.set)), testGetenv)
+		if err != nil {
+			t.Fatalf("%s: %v", tt.name, err)
+		}
+		if cfg.TLS.HSTSMaxAge == nil || *cfg.TLS.HSTSMaxAge != tt.want {
+			t.Errorf("%s: hsts_max_age = %v, want %v", tt.name, cfg.TLS.HSTSMaxAge, tt.want)
+		}
+	}
+	if DefaultHSTSMaxAge != 365*24*time.Hour {
+		t.Errorf("DefaultHSTSMaxAge = %v, want one year", DefaultHSTSMaxAge)
+	}
+}
+
 func TestParseLogoutAtIdP(t *testing.T) {
 	cfg, err := Parse([]byte(edit(t, "  group_refresh_interval: 5m", "  group_refresh_interval: 5m\n  logout_at_idp: true")), testGetenv)
 	if err != nil || !cfg.Auth.LogoutAtIdP {
@@ -316,6 +338,8 @@ func TestParseRejectsInvalid(t *testing.T) {
 		{"id_token_algs duplicate", "  id_token_algs: [RS256]", "  id_token_algs: [RS256, RS256]", "duplicate"},
 		{"groups claim empty", "  groups_claim: groups", `  groups_claim: ""`, "auth.groups_claim"},
 		{"group refresh zero", "  group_refresh_interval: 5m", "  group_refresh_interval: 0s", "auth.group_refresh_interval"},
+		{"hsts negative", "  key_file: key.pem", "  key_file: key.pem\n  hsts_max_age: -1s", "tls.hsts_max_age"},
+		{"hsts not whole seconds", "  key_file: key.pem", "  key_file: key.pem\n  hsts_max_age: 1500ms", "tls.hsts_max_age"},
 		{"auth domain invalid", "  domain: auth.example.test", "  domain: auth.example.test:8443", "auth.domain"},
 		{"auth domain is a route host", "  domain: auth.example.test", "  domain: app.example.test", "auth.domain"},
 

@@ -620,12 +620,19 @@ func TestRunServesHTTPSAndRedirects(t *testing.T) {
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("auth host (no upstream yet) = %d, want 404", resp.StatusCode)
 	}
+	// HTTPS responses carry HSTS (default one year); plain HTTP never does.
+	if got := resp.Header.Get("Strict-Transport-Security"); got != "max-age=31536000" {
+		t.Errorf("HTTPS Strict-Transport-Security = %q, want the one-year default", got)
+	}
 
 	plain := clientFor(env.redirectAddr, nil)
 	resp = get(t, plain, "http://app.example.test/x?y=1")
 	want := "https://app.example.test:" + httpsPort + "/x?y=1"
 	if resp.StatusCode != http.StatusPermanentRedirect || resp.Header.Get("Location") != want {
 		t.Errorf("redirect = %d %q, want 308 %q", resp.StatusCode, resp.Header.Get("Location"), want)
+	}
+	if got := resp.Header.Get("Strict-Transport-Security"); got != "" {
+		t.Errorf("plain HTTP Strict-Transport-Security = %q, want none", got)
 	}
 	resp = get(t, plain, "http://evil.example/")
 	if resp.StatusCode != http.StatusBadRequest || resp.Header.Get("Location") != "" {

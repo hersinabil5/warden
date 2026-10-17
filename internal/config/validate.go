@@ -43,6 +43,7 @@ func (c *Config) validate(getenv func(string) string) error {
 	if c.TLS.KeyFile == "" {
 		p.addf("tls.key_file", "is required")
 	}
+	c.validateHSTS(&p)
 	c.validateAuth(&p, getenv)
 	c.validateSession(&p)
 	c.validateIdentity(&p)
@@ -78,6 +79,18 @@ func (c *Config) validateListeners(p *problems) {
 	}
 	if mainPort == redirPort && (mainHost == redirHost || isWildcardHost(mainHost) || isWildcardHost(redirHost)) {
 		p.addf("http_redirect_listen", "overlaps listen %q", c.Listen)
+	}
+}
+
+func (c *Config) validateHSTS(p *problems) {
+	switch d := c.TLS.HSTSMaxAge; {
+	case d == nil:
+		v := DefaultHSTSMaxAge
+		c.TLS.HSTSMaxAge = &v
+	case *d < 0:
+		p.addf("tls.hsts_max_age", "must not be negative")
+	case *d%time.Second != 0:
+		p.addf("tls.hsts_max_age", "must be whole seconds")
 	}
 }
 

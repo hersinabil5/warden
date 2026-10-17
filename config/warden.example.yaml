@@ -8,6 +8,7 @@ http_redirect_listen: "127.0.0.1:8080"    # optional; plain HTTP, redirects to H
 tls:
   cert_file: deploy/certs/warden.pem
   key_file: deploy/certs/warden-key.pem
+  hsts_max_age: 8760h                    # optional; default one year (8760h); 0s turns HSTS off
 
 auth:
   domain: auth.warden.localhost          # central auth host (login, callback, admin)
