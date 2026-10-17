@@ -26,6 +26,7 @@ session:
   cookie_name: _warden
   absolute_ttl: 8h
   idle_timeout: 1h
+  websocket_recheck: 30s                 # optional; open WebSockets re-check the session this often (1s to 10m)
 
 identity:
   header: X-Warden-Identity

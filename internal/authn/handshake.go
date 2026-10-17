@@ -1,6 +1,7 @@
 package authn
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
@@ -77,7 +78,7 @@ func (h *Handler) Authenticate(w http.ResponseWriter, r *http.Request, host stri
 		}
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+	if !navigation(r) {
 		h.errorPage(w, r, http.StatusUnauthorized)
 		return nil, false
 	}
@@ -91,11 +92,33 @@ func (h *Handler) Authenticate(w http.ResponseWriter, r *http.Request, host stri
 // 403, since a request body can't survive the round trip.
 func (h *Handler) StepUp(w http.ResponseWriter, r *http.Request, host string) {
 	w.Header().Set("Cache-Control", "no-store")
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+	if !navigation(r) {
 		h.errorPage(w, r, http.StatusForbidden)
 		return
 	}
 	h.loginRedirect(w, r, host, true)
+}
+
+// navigation reports whether r can follow a login redirect and come back:
+// a GET or HEAD that isn't a protocol upgrade (a WebSocket can't).
+func navigation(r *http.Request) bool {
+	return (r.Method == http.MethodGet || r.Method == http.MethodHead) && r.Header.Get("Upgrade") == ""
+}
+
+// Recheck implements proxy.Rechecker: it re-validates the app session
+// behind r's cookie for host, including the group refresh, without writing
+// anything (the connection belongs to a WebSocket by then). Any error,
+// including a store failure, means the connection must close.
+func (h *Handler) Recheck(ctx context.Context, r *http.Request, host, reqID string) (*session.Session, error) {
+	c, err := r.Cookie(h.cookieName)
+	if err != nil || c.Value == "" {
+		return nil, session.ErrNotFound
+	}
+	sess, err := h.sessions.GetApp(ctx, c.Value, host)
+	if err != nil {
+		return nil, err
+	}
+	return h.fresh(ctx, sess, reqID)
 }
 
 // loginRedirect sends the browser from an app host to login on the auth

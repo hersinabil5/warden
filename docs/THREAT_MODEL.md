@@ -55,6 +55,9 @@ Update this whenever a change adds, removes, or weakens a mitigation.
 | T32 | Secrets leaking via the audit log | Events omit query strings, cookies, `Authorization`, tokens; session only as a 12-hex prefix of its hash; tested with planted secrets (D19) | M5 | done |
 | T34 | Clickjacking, MIME sniffing, and referrer leaks on Warden pages | Every Warden response gets `frame-ancestors 'none'` + `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: no-referrer`, COOP, and a default `default-src 'none'` CSP, applied centrally; tested across every endpoint (D26) | M7 | done |
 | T35 | SSL stripping on first visit after a plain-HTTP link | HSTS on every HTTPS response (one year, configurable); upstreams cannot weaken or widen it; never sent over plain HTTP (D26) | M7 | done |
+| T36 | Request smuggling through a protocol upgrade (`Upgrade: h2c`) past per-path policy | Only `Upgrade: websocket` on GET switches; any other upgrade is a 400 and audited; HTTP/2 extended CONNECT off (D29) | M7 | done |
+| T37 | Cross-site WebSocket hijacking (another site or a sibling route riding the user's cookies) | WebSocket `Origin` must be the route's own https origin and port, else 403 (D29) | M7 | done |
+| T38 | Long-lived connections outliving revocation, expiry, or a policy change | Open WebSockets re-checked every `session.websocket_recheck` (default 30 s): session, group refresh, and route policy; any failure, store errors included, closes both ends; no sockets without re-check support (D29) | M7 | done |
 
 ## Out of scope (explicitly not defended)
 

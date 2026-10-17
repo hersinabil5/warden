@@ -55,7 +55,15 @@ type Session struct {
 	CookieName  string        `yaml:"cookie_name"`
 	AbsoluteTTL time.Duration `yaml:"absolute_ttl"`
 	IdleTimeout time.Duration `yaml:"idle_timeout"`
+	// WebSocketRecheck is how often an open WebSocket's session and policy
+	// are re-checked, so revocation reaches it. Unset means
+	// DefaultWebSocketRecheck.
+	WebSocketRecheck time.Duration `yaml:"websocket_recheck"`
 }
+
+// DefaultWebSocketRecheck bounds how long a revoked session's WebSocket
+// stays open.
+const DefaultWebSocketRecheck = 30 * time.Second
 
 type Identity struct {
 	Header         string `yaml:"header"` // canonicalized

@@ -7,9 +7,11 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha1" //nolint:gosec // G505: RFC 6455 handshake in a test upstream
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -1227,5 +1229,97 @@ func TestRunStepUpWithoutOTPDoesNotLoop(t *testing.T) {
 	// Asking again right away doesn't bounce to the IdP either.
 	if again := get(t, b, "https://app.example.test:"+port+"/admin"); again.StatusCode != http.StatusForbidden {
 		t.Errorf("second /admin = %d, want 403", again.StatusCode)
+	}
+}
+
+// wsEcho is an upstream that accepts any WebSocket handshake and echoes
+// bytes; done gets a value when a connection ends.
+func wsEcho(t *testing.T, done chan<- struct{}) *httptest.Server {
+	t.Helper()
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sum := sha1.Sum([]byte(r.Header.Get("Sec-Websocket-Key") + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")) //nolint:gosec // G401: RFC 6455 handshake
+		w.Header().Set("Sec-WebSocket-Accept", base64.StdEncoding.EncodeToString(sum[:]))
+		w.Header().Set("Connection", "Upgrade")
+		w.Header().Set("Upgrade", "websocket")
+		w.WriteHeader(http.StatusSwitchingProtocols)
+		conn, brw, err := http.NewResponseController(w).Hijack()
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close(); done <- struct{}{} }()
+		_ = brw.Flush()
+		_, _ = io.Copy(conn, brw)
+	}))
+	t.Cleanup(s.Close)
+	return s
+}
+
+// PLAN.md M7: WebSockets get the same checks, and revocation reaches an open
+// socket at the next re-check.
+func TestRunWebSocketClosedOnLogout(t *testing.T) {
+	done := make(chan struct{}, 4)
+	up := wsEcho(t, done)
+	idp := testidp.New(t)
+	idp.SetClientSecret(testSecret)
+	cfg := strings.Replace(minimalConfig, "http://127.0.0.1:9001", up.URL, 1)
+	cfg = strings.Replace(cfg, "idle_timeout: 1h}", "idle_timeout: 1h, websocket_recheck: 1s}", 1)
+	env := newTestEnvWithIdP(t, cfg, idp)
+	startRun(t, "-config", env.path)
+	_, port := splitPort(t, env.httpsAddr)
+	b := browserFor(t, env)
+	browse(t, b, "https://app.example.test:"+port+"/") // log in
+
+	appURL, _ := url.Parse("https://app.example.test:" + port + "/")
+	var cookies []string
+	for _, c := range b.Jar.Cookies(appURL) {
+		cookies = append(cookies, c.Name+"="+c.Value)
+	}
+	dialer := tls.Dialer{Config: &tls.Config{ServerName: "app.example.test", RootCAs: env.pool, MinVersion: tls.VersionTLS12}}
+	conn, err := dialer.DialContext(t.Context(), "tcp", env.httpsAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	_, _ = io.WriteString(conn, "GET /live HTTP/1.1\r\nHost: app.example.test:"+port+"\r\n"+
+		"Connection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\n"+
+		"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nOrigin: https://app.example.test:"+port+"\r\n"+
+		"Cookie: "+strings.Join(cookies, "; ")+"\r\n\r\n")
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("upgrade = %d, want 101", resp.StatusCode)
+	}
+	_, _ = io.WriteString(conn, "ping")
+	buf := make([]byte, 4)
+	if _, rerr := io.ReadFull(br, buf); rerr != nil || string(buf) != "ping" {
+		t.Fatalf("echo = %q, %v", buf, rerr)
+	}
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://auth.example.test:"+port+"/.warden/logout", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Origin", "https://auth.example.test:"+port)
+	out, err := b.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = out.Body.Close()
+	loggedOut := time.Now()
+	if _, err := br.ReadByte(); !errors.Is(err, io.EOF) {
+		t.Fatalf("socket still open after logout: %v", err)
+	}
+	if d := time.Since(loggedOut); d > 3*time.Second {
+		t.Errorf("socket closed after %v, want within the 1s re-check", d)
+	}
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Error("upstream side of the socket still open")
 	}
 }

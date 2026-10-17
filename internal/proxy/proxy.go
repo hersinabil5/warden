@@ -107,6 +107,10 @@ type Options struct {
 	// HSTSMaxAge is the Strict-Transport-Security max-age sent on every
 	// response, proxied or not; zero sends none. Handler serves HTTPS only.
 	HSTSMaxAge time.Duration
+	// WebSocketRecheck is how often open WebSockets are re-checked; zero
+	// means DefaultWebSocketRecheck. WebSockets also need an Authenticator
+	// that implements Rechecker.
+	WebSocketRecheck time.Duration
 }
 
 // Handler routes requests by Host to upstream reverse proxies.
@@ -122,7 +126,9 @@ type Handler struct {
 	// Admin endpoint limits: per client IP before the session lookup, then
 	// per session (docs/DECISIONS.md D27).
 	adminIPLimit, adminSessionLimit *ratelimit.Limiter
-	hsts                            string // Strict-Transport-Security value; "" for off
+	hsts                            string
+	port                            string        // public HTTPS port, for WebSocket Origin checks
+	wsRecheck                       time.Duration // see Options.WebSocketRecheck // Strict-Transport-Security value; "" for off
 	now                             func() time.Time
 	logger                          *slog.Logger
 }
@@ -166,6 +172,15 @@ func New(cfg *config.Config, opts Options) (*Handler, error) {
 	}
 	if h.now == nil {
 		h.now = time.Now
+	}
+	port, err := publicPortOf(cfg.Listen)
+	if err != nil {
+		return nil, fmt.Errorf("listen address: %w", err)
+	}
+	h.port = port
+	h.wsRecheck = opts.WebSocketRecheck
+	if h.wsRecheck <= 0 {
+		h.wsRecheck = DefaultWebSocketRecheck
 	}
 	if h.admin != nil {
 		var err error
@@ -215,6 +230,11 @@ func New(cfg *config.Config, opts Options) (*Handler, error) {
 				// Warden terminates TLS for this host and alone decides its
 				// HSTS policy; an app cannot turn it off or widen it.
 				res.Header.Del(hstsHeader)
+				if res.StatusCode == http.StatusSwitchingProtocols {
+					if up, ok := res.Request.Context().Value(upgradedKey{}).(*bool); ok {
+						*up = true
+					}
+				}
 				stripSetCookies(res.Header, cookies)
 				return nil
 			},
@@ -247,6 +267,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ae := &auditState{on: isRoute, reason: "no decision"}
 	rawPath, _, _ := strings.Cut(r.RequestURI, "?")
 	defer func() {
+		status := rec.statusCode()
+		if ae.upgraded {
+			status = http.StatusSwitchingProtocols
+		}
 		if ae.on {
 			path := r.URL.Path
 			if ae.rawPath {
@@ -256,7 +280,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				Time: start, RequestID: id, User: ae.user, Session: ae.session,
 				Host: host, Method: r.Method, Path: path,
 				Decision: ae.decision, Rule: ae.rule, Reason: ae.reason,
-				Latency: time.Since(start), Status: rec.statusCode(),
+				Latency: time.Since(start), Status: status,
 			})
 		}
 		// Path only: the query string can carry tokens or codes (invariant 9).
@@ -265,7 +289,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"host", host,
 			"method", r.Method,
 			"path", r.URL.Path,
-			"status", rec.statusCode(),
+			"status", status,
 			"duration_ms", time.Since(start).Milliseconds(),
 		)
 	}()
@@ -296,6 +320,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 type auditState struct {
 	on            bool // record an event for this request
 	rawPath       bool // record the path as sent: it was never normalized
+	upgraded      bool // switched protocols: the status is 101
 	decision      audit.Decision
 	rule, reason  string
 	user, session string
@@ -385,6 +410,20 @@ func (h *Handler) route(w http.ResponseWriter, r *http.Request, host, id string,
 		writePage(w, http.StatusForbidden, id)
 		return
 	}
+	ws, err := webSocketUpgrade(r)
+	if err != nil {
+		h.logger.Info("upgrade refused", "request_id", id, "host", host, "upgrade", r.Header.Values("Upgrade"))
+		ae.deny("", reasonBadUpgrade)
+		writePage(w, http.StatusBadRequest, id)
+		return
+	}
+	rc, canRecheck := h.authn.(Rechecker)
+	if ws && !h.sameOrigin(r, host) {
+		h.logger.Info("websocket refused", "request_id", id, "host", host, "reason", reasonCrossOrigin)
+		ae.deny("", reasonCrossOrigin)
+		writePage(w, http.StatusForbidden, id)
+		return
+	}
 	sess, ok := h.authn.Authenticate(w, r, host)
 	if !ok {
 		ae.deny("", "unauthenticated")
@@ -419,10 +458,32 @@ func (h *Handler) route(w http.ResponseWriter, r *http.Request, host, id string,
 		writePage(w, http.StatusInternalServerError, id)
 		return
 	}
+	if ws && !canRecheck {
+		// Without re-checks an open socket would outlive revocation.
+		ae.reason = reasonNoRecheck
+		writePage(w, http.StatusForbidden, id)
+		return
+	}
 	ae.decision = audit.Allow
 	clearPageHeaders(w.Header())
-	rt.proxy.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), assertionKey{}, tok)))
+	ctx := context.WithValue(r.Context(), assertionKey{}, tok)
+	if !ws {
+		rt.proxy.ServeHTTP(w, r.WithContext(ctx))
+		return
+	}
+	// Cancelling the request context closes both ends of a switched
+	// connection (httputil.ReverseProxy), so the watcher can end it.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	upgraded := new(bool)
+	ctx = context.WithValue(ctx, upgradedKey{}, upgraded)
+	go h.watchWebSocket(ctx, cancel, rc, r, host, id, rt.policy)
+	rt.proxy.ServeHTTP(w, r.WithContext(ctx))
+	ae.upgraded = *upgraded
 }
+
+// upgradedKey carries a *bool that ModifyResponse sets on a 101 response.
+type upgradedKey struct{}
 
 // serveAdmin applies the route checks to an admin endpoint: main session,
 // admin policy (default deny), audit. API failures are JSON errors;

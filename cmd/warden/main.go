@@ -172,15 +172,16 @@ func run(ctx context.Context, args []string, logOut, auditOut io.Writer, getenv 
 		return err
 	}
 	handler, err := proxy.New(cfg, proxy.Options{
-		Identity:      signer,
-		JWKS:          signer.JWKSHandler(),
-		Logger:        logger,
-		Auth:          authHandler,
-		Authenticator: authHandler,
-		CookieNames:   authn.CookieNames(cfg.Session.CookieName),
-		Audit:         audit.Multi(sink, recent),
-		Admin:         adminRoute,
-		HSTSMaxAge:    *cfg.TLS.HSTSMaxAge, // set by config validation
+		Identity:         signer,
+		JWKS:             signer.JWKSHandler(),
+		Logger:           logger,
+		Auth:             authHandler,
+		Authenticator:    authHandler,
+		CookieNames:      authn.CookieNames(cfg.Session.CookieName),
+		Audit:            audit.Multi(sink, recent),
+		Admin:            adminRoute,
+		HSTSMaxAge:       *cfg.TLS.HSTSMaxAge, // set by config validation
+		WebSocketRecheck: cfg.Session.WebSocketRecheck,
 	})
 	if err != nil {
 		return err

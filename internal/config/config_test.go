@@ -203,6 +203,17 @@ func TestParseRateLimits(t *testing.T) {
 	}
 }
 
+func TestParseWebSocketRecheck(t *testing.T) {
+	cfg, err := Parse([]byte(baseYAML), testGetenv)
+	if err != nil || cfg.Session.WebSocketRecheck != DefaultWebSocketRecheck {
+		t.Fatalf("default = %v, %v; want %v", cfg.Session.WebSocketRecheck, err, DefaultWebSocketRecheck)
+	}
+	cfg, err = Parse([]byte(edit(t, "  idle_timeout: 1h", "  idle_timeout: 1h\n  websocket_recheck: 5s")), testGetenv)
+	if err != nil || cfg.Session.WebSocketRecheck != 5*time.Second {
+		t.Errorf("explicit = %v, %v", cfg.Session.WebSocketRecheck, err)
+	}
+}
+
 func TestParseLogoutAtIdP(t *testing.T) {
 	cfg, err := Parse([]byte(edit(t, "  group_refresh_interval: 5m", "  group_refresh_interval: 5m\n  logout_at_idp: true")), testGetenv)
 	if err != nil || !cfg.Auth.LogoutAtIdP {
@@ -368,6 +379,8 @@ func TestParseRejectsInvalid(t *testing.T) {
 		{"rate limit burst missing", "audit:\n", "rate_limits:\n  admin_session: {per_minute: 10}\naudit:\n", "rate_limits.admin_session.burst"},
 		{"rate limit absurd rate", "audit:\n", "rate_limits:\n  login: {per_minute: 1000001, burst: 5}\naudit:\n", "rate_limits.login.per_minute"},
 		{"rate limit unknown field", "audit:\n", "rate_limits:\n  logout: {per_minute: 10, burst: 5}\naudit:\n", "logout"},
+		{"websocket recheck too short", "  idle_timeout: 1h", "  idle_timeout: 1h\n  websocket_recheck: 500ms", "session.websocket_recheck"},
+		{"websocket recheck too long", "  idle_timeout: 1h", "  idle_timeout: 1h\n  websocket_recheck: 11m", "session.websocket_recheck"},
 		{"hsts negative", "  key_file: key.pem", "  key_file: key.pem\n  hsts_max_age: -1s", "tls.hsts_max_age"},
 		{"hsts not whole seconds", "  key_file: key.pem", "  key_file: key.pem\n  hsts_max_age: 1500ms", "tls.hsts_max_age"},
 		{"auth domain invalid", "  domain: auth.example.test", "  domain: auth.example.test:8443", "auth.domain"},

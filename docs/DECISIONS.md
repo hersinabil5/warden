@@ -754,3 +754,39 @@ returns to the original URL.
 **Consequences:** A step-up costs a full login, and afterwards other app hosts redo a (silent)
 handshake because the main session was replaced. An app that needs fresh MFA for a POST must have
 the user load a page under the protected path first.
+
+## D29: WebSockets
+
+**Context:** `httputil.ReverseProxy` already forwards protocol upgrades, after the normal
+authentication and policy checks. Four gaps remained: it forwarded *any* upgrade, including `h2c`;
+an open socket is one request, so revocation ("effective on the next request") never reached it,
+and Go clears all connection deadlines on hijack; browsers don't apply CORS to WebSockets; and a
+logged-out socket got a login redirect it can't follow.
+
+**Decision:**
+- **Only `websocket`.** A request with both `Upgrade` and a `Connection: upgrade` token must be a
+  GET with exactly one `Upgrade` value, `websocket` (case-insensitive); anything else is a 400,
+  audited as `unsupported upgrade`. After a 101 the connection is an opaque pipe to the upstream,
+  and an `h2c` upgrade would let the client send HTTP/2 requests for any path straight to the app
+  (h2c smuggling), past per-path policy. Half an upgrade (one header without the other) is a plain
+  request; `ReverseProxy` strips both as hop-by-hop. HTTP/2 WebSockets (extended CONNECT) are off
+  in Go's server, and a `CONNECT` is a 400 at path normalization.
+- **Same origin.** A WebSocket's `Origin` must be the route's own origin (https, its host, Warden's
+  public port, nothing else in it): another site, or a sibling route on the same site, which
+  `SameSite=Lax` cookies still reach, gets a 403 (`cross-origin websocket`). A missing `Origin`
+  is allowed: browsers always send it, and a non-browser client could forge it.
+- **Status codes, not redirects:** a socket without a session gets a 401 (no handshake cookie),
+  and a socket that would need a step-up gets a 403.
+- **Re-checks:** while a socket is open Warden re-checks it every `session.websocket_recheck`
+  (default 30 s): the session behind the cookie, including the group refresh (D23), then the
+  route policy for its path at the current time. Any failure, including a session store error,
+  cancels the request context, which closes both ends. So for sockets, revocation takes effect
+  within one re-check interval, which is how invariant 8 applies to a request that never ends.
+  An authenticator that can't re-check (no `Recheck`) gets no sockets at all.
+- **Audit:** one event per socket, written when it closes, with status 101 and the connection's
+  lifetime as latency; a socket closed by a re-check is logged with the reason.
+
+**Consequences:** A revoked or expired session can keep a socket open for up to the re-check
+interval. Each open socket costs one session read (and occasionally an IdP refresh) per interval,
+and keeps the session's idle timer fresh while it is open. A Redis outage closes every socket at
+the next re-check rather than keeping them open unchecked.

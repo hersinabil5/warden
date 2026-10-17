@@ -202,6 +202,12 @@ func (c *Config) validateSession(p *problems) {
 	case s.AbsoluteTTL > 0 && s.IdleTimeout > s.AbsoluteTTL:
 		p.addf("session.idle_timeout", "%v exceeds absolute_ttl %v", s.IdleTimeout, s.AbsoluteTTL)
 	}
+	switch {
+	case s.WebSocketRecheck == 0:
+		s.WebSocketRecheck = DefaultWebSocketRecheck
+	case s.WebSocketRecheck < time.Second || s.WebSocketRecheck > 10*time.Minute:
+		p.addf("session.websocket_recheck", "must be between 1s and 10m")
+	}
 }
 
 func (c *Config) validateIdentity(p *problems) {
