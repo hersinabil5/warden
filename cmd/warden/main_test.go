@@ -39,6 +39,7 @@ import (
 	"github.com/hersinabil5/warden/internal/admin"
 	"github.com/hersinabil5/warden/internal/authn/testidp"
 	"github.com/hersinabil5/warden/internal/config"
+	"github.com/hersinabil5/warden/internal/demo"
 	"github.com/hersinabil5/warden/internal/identity"
 )
 
@@ -1321,5 +1322,44 @@ func TestRunWebSocketClosedOnLogout(t *testing.T) {
 	case <-done:
 	case <-time.After(3 * time.Second):
 		t.Error("upstream side of the socket still open")
+	}
+}
+
+const demoSection = `demo:
+  enabled: true
+  accounts:
+    - {username: alice, password: alice, otp_secret: K5QXEZDFNZCGK5SPORYEC3DJMNSTAMBR, description: "admins, sre; has OTP"}
+    - {username: bob, password: bob, description: "dev; no OTP"}
+audit:`
+
+func TestRunDemoLandingPage(t *testing.T) {
+	cfg := strings.Replace(stepUpConfig("http://127.0.0.1:9001"), "audit:", demoSection, 1)
+	env := newTestEnv(t, cfg)
+	logs := startRun(t, "-config", env.path)
+	_, port := splitPort(t, env.httpsAddr)
+	resp := get(t, clientFor(env.httpsAddr, env.pool), "https://auth.example.test:"+port+"/")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("landing = %d", resp.StatusCode)
+	}
+	key := []byte("WardenDevOtpAlice001")
+	now := time.Now()
+	codes := []string{demo.Code(key, now.Add(-demo.Period)), demo.Code(key, now), demo.Code(key, now.Add(demo.Period))}
+	if !strings.Contains(resp.Body, codes[0]) && !strings.Contains(resp.Body, codes[1]) && !strings.Contains(resp.Body, codes[2]) {
+		t.Errorf("landing page shows no current code for alice (%v)", codes)
+	}
+	for _, want := range []string{"https://app.example.test:" + port + "/admin", "groups admins with MFA within 10m", "any signed-in user"} {
+		if !strings.Contains(resp.Body, want) {
+			t.Errorf("landing page lacks %q", want)
+		}
+	}
+	if strings.Contains(resp.Body, testSecret) {
+		t.Error("landing page shows the client secret")
+	}
+	if !strings.Contains(logs.String(), "DEMO MODE") {
+		t.Error("no demo mode warning at startup")
+	}
+	// Not on app hosts, and not without demo mode (TestRunServesHTTPSAndRedirects).
+	if r := get(t, clientFor(env.httpsAddr, env.pool), "https://auth.example.test:"+port+"/demo"); r.StatusCode != http.StatusNotFound {
+		t.Errorf("/demo = %d, want 404", r.StatusCode)
 	}
 }

@@ -171,7 +171,16 @@ func run(ctx context.Context, args []string, logOut, auditOut io.Writer, getenv 
 	if err != nil {
 		return err
 	}
+	landing, err := newLanding(cfg, nil)
+	if err != nil {
+		return fmt.Errorf("demo landing page: %w", err)
+	}
+	if cfg.Demo != nil {
+		logger.Warn("DEMO MODE: demo account credentials are shown publicly on the auth host",
+			"accounts", len(cfg.Demo.Accounts), "reset_interval", cfg.Demo.ResetInterval.String())
+	}
 	handler, err := proxy.New(cfg, proxy.Options{
+		Landing:          landing,
 		Identity:         signer,
 		JWKS:             signer.JWKSHandler(),
 		Logger:           logger,

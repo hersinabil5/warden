@@ -21,6 +21,7 @@ type Config struct {
 	RateLimits         RateLimits `yaml:"rate_limits"`   // optional; unset limits use the defaults
 	Audit              Audit      `yaml:"audit"`
 	Admin              *Admin     `yaml:"admin"` // optional; nil turns the admin API off
+	Demo               *Demo      `yaml:"demo"`  // optional; public demo mode (D30)
 	Routes             []Route    `yaml:"routes"`
 }
 
@@ -100,6 +101,28 @@ var (
 	DefaultAdminIPRate      = RateLimit{PerMinute: 120, Burst: 30}
 	DefaultAdminSessionRate = RateLimit{PerMinute: 60, Burst: 20}
 )
+
+// Demo turns on the public demo mode: a landing page on the auth host with
+// these accounts and their current OTP codes, admin views scoped to each
+// visitor, and a reset of all sessions every ResetInterval. Everything in it
+// is shown to anyone, so it holds no real credentials.
+type Demo struct {
+	Enabled       bool          `yaml:"enabled"`        // must be true: no demo mode by accident
+	ResetInterval time.Duration `yaml:"reset_interval"` // default DefaultDemoReset
+	Accounts      []DemoAccount `yaml:"accounts"`
+}
+
+// DemoAccount is a public demo login, shown on the landing page.
+type DemoAccount struct {
+	Username    string `yaml:"username"`
+	Password    string `yaml:"password"`
+	OTPSecret   string `yaml:"otp_secret"` // optional; base32 TOTP key as the IdP has it
+	Description string `yaml:"description"`
+	OTPKey      []byte `yaml:"-"` // OTPSecret decoded
+}
+
+// DefaultDemoReset is how often demo mode wipes sessions.
+const DefaultDemoReset = time.Hour
 
 // Admin is who may use the admin API and dashboard on the auth host. Every
 // rule must name users or groups and require recent MFA.

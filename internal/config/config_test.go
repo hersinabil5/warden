@@ -214,6 +214,41 @@ func TestParseWebSocketRecheck(t *testing.T) {
 	}
 }
 
+func TestParseDemo(t *testing.T) {
+	cfg, err := Parse([]byte(baseYAML), testGetenv)
+	if err != nil || cfg.Demo != nil {
+		t.Fatalf("demo off by default: %+v, %v", cfg.Demo, err)
+	}
+	cfg, err = Parse([]byte(edit(t, "audit:\n", "demo:\n  enabled: true\n  accounts:\n    - {username: alice, password: alice, otp_secret: K5QXEZDFNZCGK5SPORYEC3DJMNSTAMBR, description: admin}\n    - {username: bob, password: bob}\naudit:\n")), testGetenv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := cfg.Demo
+	if d.ResetInterval != DefaultDemoReset || len(d.Accounts) != 2 {
+		t.Fatalf("demo = %+v", d)
+	}
+	if string(d.Accounts[0].OTPKey) != "WardenDevOtpAlice001" || d.Accounts[1].OTPKey != nil {
+		t.Errorf("OTP keys = %q, %q", d.Accounts[0].OTPKey, d.Accounts[1].OTPKey)
+	}
+}
+
+func TestParseOTPSecret(t *testing.T) {
+	for _, in := range []string{
+		"K5QXEZDFNZCGK5SPORYEC3DJMNSTAMBR",
+		"k5qxezdfnzcgk5sporyec3djmnstambr",
+		"K5QX EZDF NZCG K5SP ORYE C3DJ MNST AMBR",
+	} {
+		if got, err := parseOTPSecret(in); err != nil || string(got) != "WardenDevOtpAlice001" {
+			t.Errorf("parseOTPSecret(%q) = %q, %v", in, got, err)
+		}
+	}
+	for _, bad := range []string{"", "K5QX", "not base32!", "K5QXEZDFNZCGK5SPORYEC3DJMNSTAMB1", "K5QXEZDFNZCGK5SPORYEC3DJMNSTAMBR\u0435"} {
+		if _, err := parseOTPSecret(bad); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}
+
 func TestParseLogoutAtIdP(t *testing.T) {
 	cfg, err := Parse([]byte(edit(t, "  group_refresh_interval: 5m", "  group_refresh_interval: 5m\n  logout_at_idp: true")), testGetenv)
 	if err != nil || !cfg.Auth.LogoutAtIdP {
@@ -381,6 +416,15 @@ func TestParseRejectsInvalid(t *testing.T) {
 		{"rate limit unknown field", "audit:\n", "rate_limits:\n  logout: {per_minute: 10, burst: 5}\naudit:\n", "logout"},
 		{"websocket recheck too short", "  idle_timeout: 1h", "  idle_timeout: 1h\n  websocket_recheck: 500ms", "session.websocket_recheck"},
 		{"websocket recheck too long", "  idle_timeout: 1h", "  idle_timeout: 1h\n  websocket_recheck: 11m", "session.websocket_recheck"},
+		{"demo without accounts", "audit:\n", "demo:\n  enabled: true\n  accounts: []\naudit:\n", "demo.accounts"},
+		{"demo account without password", "audit:\n", "demo:\n  enabled: true\n  accounts:\n    - {username: alice}\naudit:\n", "demo.accounts[0].password"},
+		{"demo account without username", "audit:\n", "demo:\n  enabled: true\n  accounts:\n    - {password: x}\naudit:\n", "demo.accounts[0].username"},
+		{"demo duplicate account", "audit:\n", "demo:\n  enabled: true\n  accounts:\n    - {username: a, password: x}\n    - {username: a, password: y}\naudit:\n", "duplicate"},
+		{"demo bad otp secret", "audit:\n", "demo:\n  enabled: true\n  accounts:\n    - {username: a, password: x, otp_secret: \"not base32!\"}\naudit:\n", "demo.accounts[0].otp_secret"},
+		{"demo short otp secret", "audit:\n", "demo:\n  enabled: true\n  accounts:\n    - {username: a, password: x, otp_secret: K5QXEZDF}\naudit:\n", "demo.accounts[0].otp_secret"},
+		{"demo reset too short", "audit:\n", "demo:\n  enabled: true\n  reset_interval: 30s\n  accounts:\n    - {username: a, password: x}\naudit:\n", "demo.reset_interval"},
+		{"demo reset too long", "audit:\n", "demo:\n  enabled: true\n  reset_interval: 25h\n  accounts:\n    - {username: a, password: x}\naudit:\n", "demo.reset_interval"},
+		{"demo needs enabled", "audit:\n", "demo:\n  accounts:\n    - {username: a, password: x}\naudit:\n", "demo.enabled"},
 		{"hsts negative", "  key_file: key.pem", "  key_file: key.pem\n  hsts_max_age: -1s", "tls.hsts_max_age"},
 		{"hsts not whole seconds", "  key_file: key.pem", "  key_file: key.pem\n  hsts_max_age: 1500ms", "tls.hsts_max_age"},
 		{"auth domain invalid", "  domain: auth.example.test", "  domain: auth.example.test:8443", "auth.domain"},

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base32"
 	"errors"
 	"fmt"
 	"net"
@@ -55,6 +56,7 @@ func (c *Config) validate(getenv func(string) string) error {
 		c.StripHeaders[i] = http.CanonicalHeaderKey(h)
 	}
 	c.validateRateLimits(&p)
+	c.validateDemo(&p)
 	c.validateAudit(&p)
 	c.validateAdmin(&p)
 	c.validateRoutes(&p)
@@ -93,6 +95,64 @@ func (c *Config) validateHSTS(p *problems) {
 	case *d%time.Second != 0:
 		p.addf("tls.hsts_max_age", "must be whole seconds")
 	}
+}
+
+func (c *Config) validateDemo(p *problems) {
+	d := c.Demo
+	if d == nil {
+		return
+	}
+	if !d.Enabled {
+		p.addf("demo.enabled", "must be true when demo is set (remove the section to turn demo mode off)")
+	}
+	switch {
+	case d.ResetInterval == 0:
+		d.ResetInterval = DefaultDemoReset
+	case d.ResetInterval < time.Minute || d.ResetInterval > 24*time.Hour:
+		p.addf("demo.reset_interval", "must be between 1m and 24h")
+	}
+	if len(d.Accounts) == 0 || len(d.Accounts) > 10 {
+		p.addf("demo.accounts", "must list 1 to 10 accounts")
+	}
+	seen := map[string]bool{}
+	for i := range d.Accounts {
+		a := &d.Accounts[i]
+		field := fmt.Sprintf("demo.accounts[%d]", i)
+		switch {
+		case a.Username == "":
+			p.addf(field+".username", "is required")
+		case seen[a.Username]:
+			p.addf(field+".username", "duplicate %q", a.Username)
+		}
+		seen[a.Username] = true
+		if a.Password == "" {
+			p.addf(field+".password", "is required")
+		}
+		if a.OTPSecret != "" {
+			key, err := parseOTPSecret(a.OTPSecret)
+			if err != nil {
+				p.addf(field+".otp_secret", "%v", err)
+			}
+			a.OTPKey = key
+		}
+	}
+}
+
+// minOTPSecretBytes is RFC 4226's minimum shared secret length (128 bits).
+const minOTPSecretBytes = 16
+
+// parseOTPSecret decodes a TOTP key as authenticator apps show it: base32,
+// case-insensitive, spaces allowed, padding optional.
+func parseOTPSecret(s string) ([]byte, error) {
+	s = strings.TrimRight(strings.ToUpper(strings.ReplaceAll(s, " ", "")), "=")
+	b, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(s)
+	if err != nil {
+		return nil, errors.New("not a base32 key")
+	}
+	if len(b) < minOTPSecretBytes {
+		return nil, errors.New("shorter than 128 bits")
+	}
+	return b, nil
 }
 
 // maxRatePerMinute keeps rates in a range where the limiter's arithmetic is

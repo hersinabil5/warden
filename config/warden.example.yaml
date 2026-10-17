@@ -42,6 +42,18 @@ rate_limits:                             # optional; always on, these are the de
   admin_ip: {per_minute: 120, burst: 30} # per client IP, admin API + dashboard, before the session lookup
   admin_session: {per_minute: 60, burst: 20}  # per signed-in session, admin API + dashboard
 
+# Public demo mode (docs/DECISIONS.md D30). Leave it out of real deployments: everything here is
+# shown on a public landing page at the auth host's root.
+# demo:
+#   enabled: true
+#   reset_interval: 1h                   # all sessions wiped this often (1m to 24h)
+#   accounts:
+#     - username: alice
+#       password: alice
+#       otp_secret: K5QXEZDFNZCGK5SPORYEC3DJMNSTAMBR   # base32, as the IdP has it; current code shown
+#       description: "admins, sre; has OTP"
+#     - {username: bob, password: bob, description: "dev; no OTP"}
+
 audit:
   sink: file              # file (JSON lines, appended, 0600) | stdout; startup fails if the file can't be opened
   file: var/audit.jsonl

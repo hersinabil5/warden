@@ -107,6 +107,8 @@ type Options struct {
 	// HSTSMaxAge is the Strict-Transport-Security max-age sent on every
 	// response, proxied or not; zero sends none. Handler serves HTTPS only.
 	HSTSMaxAge time.Duration
+	// Landing serves the auth host's root (demo mode); nil leaves it 404.
+	Landing http.Handler
 	// WebSocketRecheck is how often open WebSockets are re-checked; zero
 	// means DefaultWebSocketRecheck. WebSockets also need an Authenticator
 	// that implements Rechecker.
@@ -121,6 +123,7 @@ type Handler struct {
 	authn      Authenticator
 	identity   Asserter
 	jwks       http.Handler
+	landing    http.Handler
 	audit      audit.Recorder
 	admin      *AdminRoute
 	// Admin endpoint limits: per client IP before the session lookup, then
@@ -164,6 +167,7 @@ func New(cfg *config.Config, opts Options) (*Handler, error) {
 		authn:      opts.Authenticator,
 		identity:   opts.Identity,
 		jwks:       opts.JWKS,
+		landing:    opts.Landing,
 		audit:      opts.Audit,
 		admin:      opts.Admin,
 		hsts:       hstsValue(opts.HSTSMaxAge),
@@ -382,6 +386,11 @@ func (h *Handler) route(w http.ResponseWriter, r *http.Request, host, id string,
 			return
 		}
 		h.jwks.ServeHTTP(w, r)
+		return
+	}
+	if host == h.authDomain && r.URL.Path == "/" && h.landing != nil {
+		ae.on = false
+		h.landing.ServeHTTP(w, r)
 		return
 	}
 	if host == h.authDomain && h.admin != nil && admin.Owns(r.URL.Path) {
