@@ -182,7 +182,13 @@ func run(ctx context.Context, args []string, logOut, auditOut io.Writer, getenv 
 	if err != nil {
 		return err
 	}
-	landing, err := newLanding(cfg, nil)
+	var nextReset func() time.Time
+	if cfg.Demo != nil {
+		sched := demo.NewSchedule(cfg.Demo.ResetInterval, time.Now)
+		nextReset = sched.Next
+		go sched.Run(ctx, demoReset(sessions, recent, logger), logger)
+	}
+	landing, err := newLanding(cfg, nextReset)
 	if err != nil {
 		return fmt.Errorf("demo landing page: %w", err)
 	}

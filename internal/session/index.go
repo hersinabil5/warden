@@ -156,6 +156,34 @@ func (s *Store) ListUser(ctx context.Context, sub string) ([]Session, error) {
 	return s.peekAll(ctx, hashes, sub)
 }
 
+// RevokeAll revokes every main session (with its app sessions) and drops
+// all session indexes, for demo mode's periodic reset. It returns how many
+// sessions were indexed. Single-use markers and locks are left alone, so a
+// spent login state stays spent.
+func (s *Store) RevokeAll(ctx context.Context) (int, error) {
+	hashes, err := s.rdb.ZRange(ctx, allSessionsKey, 0, -1).Result()
+	if err != nil {
+		return 0, fmt.Errorf("session store: %w", err)
+	}
+	for _, h := range hashes {
+		if err := s.revoke(ctx, h, ""); err != nil {
+			return 0, err
+		}
+	}
+	for _, pattern := range []string{userKey("*"), visitorKey("*")} {
+		iter := s.rdb.Scan(ctx, 0, pattern, 500).Iterator()
+		for iter.Next(ctx) {
+			if err := s.rdb.Del(ctx, iter.Val()).Err(); err != nil {
+				return 0, fmt.Errorf("session store: %w", err)
+			}
+		}
+		if err := iter.Err(); err != nil {
+			return 0, fmt.Errorf("session store: %w", err)
+		}
+	}
+	return len(hashes), nil
+}
+
 // ListVisitor returns a demo visitor's live main sessions, newest first, at
 // most MaxListLimit. It does not count as activity.
 func (s *Store) ListVisitor(ctx context.Context, visitor string) ([]Session, error) {

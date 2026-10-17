@@ -267,3 +267,39 @@ func TestUpdateKeepsVisitor(t *testing.T) {
 		t.Errorf("after update: visitor %q groups %v", got.Visitor, got.Groups)
 	}
 }
+
+// Demo mode's reset: every session and index goes; other state (single-use
+// markers) stays, so a reset can't re-open a spent login state.
+func TestRevokeAll(t *testing.T) {
+	s, mr, _ := newTestStore(t)
+	a, _ := s.Create(t.Context(), visitorSession("sub-alice", "v1"))
+	b, _ := s.Create(t.Context(), visitorSession("sub-bob", "v2"))
+	app, err := s.CreateApp(t.Context(), HashID(a), "whoami.example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, merr := s.MarkUsed(t.Context(), "state", "spent-state", time.Hour); merr != nil {
+		t.Fatal(merr)
+	}
+	n, err := s.RevokeAll(t.Context())
+	if err != nil || n != 2 {
+		t.Fatalf("RevokeAll = %d, %v; want 2", n, err)
+	}
+	for _, id := range []string{a, b} {
+		if _, err := s.Get(t.Context(), id); !errors.Is(err, ErrNotFound) {
+			t.Errorf("session survived the reset: %v", err)
+		}
+	}
+	if _, err := s.GetApp(t.Context(), app, "whoami.example.test"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("app session survived: %v", err)
+	}
+	for _, k := range mr.Keys() {
+		if strings.HasPrefix(k, keyPrefix+"s:") || strings.HasPrefix(k, keyPrefix+"user:") ||
+			strings.HasPrefix(k, keyPrefix+"visitor:") || k == allSessionsKey {
+			t.Errorf("key %s survived the reset", k)
+		}
+	}
+	if first, _ := s.MarkUsed(t.Context(), "state", "spent-state", time.Hour); first {
+		t.Error("the reset forgot a spent login state")
+	}
+}

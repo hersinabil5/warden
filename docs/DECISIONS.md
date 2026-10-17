@@ -790,3 +790,42 @@ logged-out socket got a login redirect it can't follow.
 interval. Each open socket costs one session read (and occasionally an IdP refresh) per interval,
 and keeps the session's idle timer fresh while it is open. A Redis outage closes every socket at
 the next re-check rather than keeping them open unchecked.
+
+## D30: Demo mode
+
+**Context:** The portfolio links to a live Warden that strangers use. They need logins (alice's
+OTP included) without installing an authenticator app; they share the same few accounts; and
+nobody should see, or be able to break, anyone else's demo.
+
+**Decision:**
+- **Explicit and loud.** A `demo:` section with `enabled: true` turns it on; startup logs a
+  `DEMO MODE` warning. Everything in the section is public, by design.
+- **Landing page at the auth host's root** (the link to share): what Warden is, the demo accounts
+  with their passwords and **current OTP code** (with seconds left; the page reloads itself when
+  the code changes), every route and protected path with who may open it (generated from the
+  policies), the dashboard, a few steps to try, and when the next reset is. No JavaScript: a
+  `<meta refresh>` reloads it and its one style block is allowed by hash in a CSP that allows
+  nothing else. Config values are escaped by `html/template`.
+- **TOTP for display only.** Codes are RFC 6238 (HMAC-SHA1, 30 s, 6 digits, Keycloak's defaults)
+  over the standard library's HMAC, tested against the RFC vectors. That is a protocol on top of
+  a library primitive, not a new primitive (invariant 12). Warden never verifies codes; Keycloak
+  does. Keys are base32 as authenticator apps show them, at least 128 bits.
+- **Visitors see only themselves.** Each request and new session is tagged with a visitor ID: an
+  HMAC of the client IP (from the connection only, IPv6 by /64, as for rate limits) under a random
+  per-process key, so tags can't be traced back to addresses. In demo mode the admin API lists
+  only the caller's visitor's sessions (a per-visitor index in Redis), returns 404 for anyone
+  else's session, revokes a user's sessions only within the caller's visitor, and shows only that
+  visitor's decisions. A private window on the same connection is the same visitor, so "sign in
+  as bob in a private window, revoke him from the dashboard" works without touching anyone else.
+  Tags live in Redis and in memory; they are never written to the audit file or returned by the
+  API.
+- **Periodic reset** (`reset_interval`, default 1 h): every session goes, app sessions and
+  indexes included (open WebSockets close at their next re-check, D29), and the in-memory decision
+  view is cleared. Single-use markers stay, so a reset can't make a spent login state usable
+  again. The audit file keeps everything: it is the operator's record.
+
+**Consequences:** Visitors behind one public IP (an office, a campus NAT) share a visitor and see
+each other's demo activity. A visitor whose IP changes mid-demo (mobile) loses sight of their
+earlier sessions. Not covered here, and required before going public: the IdP must not let demo
+users change their password or OTP (no account console for them), and its demo data should be
+restored on the same schedule; that is deployment configuration for Keycloak, not Warden.

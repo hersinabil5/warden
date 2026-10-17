@@ -34,11 +34,23 @@ type Recent struct {
 	mu   sync.Mutex
 	buf  []Entry // ring of len cap
 	next uint64  // sequence number of the next event
+	// floor is the first sequence number still visible: Reset raises it so
+	// earlier events (and cursors into them) are gone.
+	floor uint64
 }
 
 // NewRecent keeps the last n events.
 func NewRecent(n int) *Recent {
 	return &Recent{buf: make([]Entry, max(n, 1)), next: 1}
+}
+
+// Reset forgets every event recorded so far (demo mode). Sequence numbers
+// keep counting, so a cursor from before the reset reaches nothing.
+func (r *Recent) Reset() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	clear(r.buf)
+	r.floor = r.next
 }
 
 func (r *Recent) Record(_ context.Context, e Event) {
@@ -75,6 +87,7 @@ func (r *Recent) Query(q Query) ([]Entry, uint64) {
 	if n := uint64(len(r.buf)); newest > n {
 		oldest = newest - n + 1
 	}
+	oldest = max(oldest, r.floor)
 	start := newest
 	if q.Before != 0 && q.Before-1 < start {
 		start = q.Before - 1

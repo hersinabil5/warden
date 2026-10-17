@@ -124,3 +124,23 @@ func TestQueryByVisitor(t *testing.T) {
 		t.Errorf("visitor tag serialized: %s", b)
 	}
 }
+
+func TestRecentReset(t *testing.T) {
+	r := NewRecent(10)
+	for range 3 {
+		r.Record(t.Context(), Event{Time: time.Unix(1, 0), Decision: Allow})
+	}
+	_, cursor := r.Query(Query{Limit: 1})
+	r.Reset()
+	if got, _ := r.Query(Query{}); len(got) != 0 {
+		t.Errorf("%d events after reset", len(got))
+	}
+	if got, _ := r.Query(Query{Before: cursor}); len(got) != 0 {
+		t.Errorf("an old cursor reached %d events from before the reset", len(got))
+	}
+	r.Record(t.Context(), Event{Time: time.Unix(2, 0), Decision: Deny})
+	got, _ := r.Query(Query{})
+	if len(got) != 1 || got[0].Seq != 4 {
+		t.Errorf("after reset: %+v, want one event with seq 4 (sequence keeps counting)", got)
+	}
+}

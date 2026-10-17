@@ -58,6 +58,8 @@ Update this whenever a change adds, removes, or weakens a mitigation.
 | T36 | Request smuggling through a protocol upgrade (`Upgrade: h2c`) past per-path policy | Only `Upgrade: websocket` on GET switches; any other upgrade is a 400 and audited; HTTP/2 extended CONNECT off (D29) | M7 | done |
 | T37 | Cross-site WebSocket hijacking (another site or a sibling route riding the user's cookies) | WebSocket `Origin` must be the route's own https origin and port, else 403 (D29) | M7 | done |
 | T38 | Long-lived connections outliving revocation, expiry, or a policy change | Open WebSockets re-checked every `session.websocket_recheck` (default 30 s): session, group refresh, and route policy; any failure, store errors included, closes both ends; no sockets without re-check support (D29) | M7 | done |
+| T39 | Demo visitors seeing or griefing each other (listing, revoking, or watching another visitor's sessions and decisions) | Demo mode tags sessions and audit events with a keyed hash of the client IP; the admin API lists, revokes, and shows only the caller's own visitor; hourly reset of all sessions and the decision view (D30) | M7 | done |
+| T40 | Demo credentials or mode leaking into a real deployment | Demo mode needs an explicit `demo.enabled: true`, logs a startup warning, and shows only the demo section, never other config or secrets (D30) | M7 | done |
 
 ## Out of scope (explicitly not defended)
 

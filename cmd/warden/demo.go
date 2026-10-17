@@ -1,14 +1,18 @@
 package main
 
 import (
+	"context"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/hersinabil5/warden/internal/admin"
+	"github.com/hersinabil5/warden/internal/audit"
 	"github.com/hersinabil5/warden/internal/config"
 	"github.com/hersinabil5/warden/internal/demo"
+	"github.com/hersinabil5/warden/internal/session"
 )
 
 // newLanding builds the demo landing page from the config: the demo
@@ -48,6 +52,21 @@ func newLanding(cfg *config.Config, nextReset func() time.Time) (http.Handler, e
 		})
 	}
 	return demo.NewPage(opts)
+}
+
+// demoReset wipes demo state: every session (open WebSockets close at their
+// next re-check) and the in-memory decisions the dashboard shows. The audit
+// sink keeps its records; they are the operator's, not the visitors'.
+func demoReset(sessions *session.Store, recent *audit.Recent, logger *slog.Logger) func(context.Context) error {
+	return func(ctx context.Context) error {
+		n, err := sessions.RevokeAll(ctx)
+		recent.Reset()
+		if err != nil {
+			return err
+		}
+		logger.Info("demo reset", "sessions", n)
+		return nil
+	}
 }
 
 // whoMay describes allow rules in a few words, for the landing page.
