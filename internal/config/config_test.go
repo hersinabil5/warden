@@ -178,6 +178,31 @@ func TestParseHSTSMaxAge(t *testing.T) {
 	}
 }
 
+func TestParseRateLimits(t *testing.T) {
+	cfg, err := Parse([]byte(baseYAML), testGetenv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := RateLimits{Login: &DefaultLoginRate, AdminIP: &DefaultAdminIPRate, AdminSession: &DefaultAdminSessionRate}
+	if got := cfg.RateLimits; *got.Login != *want.Login || *got.AdminIP != *want.AdminIP || *got.AdminSession != *want.AdminSession {
+		t.Errorf("defaults = %+v %+v %+v", *got.Login, *got.AdminIP, *got.AdminSession)
+	}
+	cfg, err = Parse([]byte(edit(t, "audit:\n", "rate_limits:\n  login: {per_minute: 5, burst: 2}\naudit:\n")), testGetenv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := *cfg.RateLimits.Login; got != (RateLimit{PerMinute: 5, Burst: 2}) {
+		t.Errorf("login = %+v", got)
+	}
+	if *cfg.RateLimits.AdminIP != DefaultAdminIPRate {
+		t.Errorf("unset admin_ip = %+v, want the default", *cfg.RateLimits.AdminIP)
+	}
+	// Setting one must not change the shared default.
+	if DefaultLoginRate != (RateLimit{PerMinute: 20, Burst: 10}) {
+		t.Errorf("DefaultLoginRate changed to %+v", DefaultLoginRate)
+	}
+}
+
 func TestParseLogoutAtIdP(t *testing.T) {
 	cfg, err := Parse([]byte(edit(t, "  group_refresh_interval: 5m", "  group_refresh_interval: 5m\n  logout_at_idp: true")), testGetenv)
 	if err != nil || !cfg.Auth.LogoutAtIdP {
@@ -338,6 +363,11 @@ func TestParseRejectsInvalid(t *testing.T) {
 		{"id_token_algs duplicate", "  id_token_algs: [RS256]", "  id_token_algs: [RS256, RS256]", "duplicate"},
 		{"groups claim empty", "  groups_claim: groups", `  groups_claim: ""`, "auth.groups_claim"},
 		{"group refresh zero", "  group_refresh_interval: 5m", "  group_refresh_interval: 0s", "auth.group_refresh_interval"},
+		{"rate limit zero rate", "audit:\n", "rate_limits:\n  login: {per_minute: 0, burst: 5}\naudit:\n", "rate_limits.login.per_minute"},
+		{"rate limit negative burst", "audit:\n", "rate_limits:\n  admin_ip: {per_minute: 10, burst: -1}\naudit:\n", "rate_limits.admin_ip.burst"},
+		{"rate limit burst missing", "audit:\n", "rate_limits:\n  admin_session: {per_minute: 10}\naudit:\n", "rate_limits.admin_session.burst"},
+		{"rate limit absurd rate", "audit:\n", "rate_limits:\n  login: {per_minute: 1000001, burst: 5}\naudit:\n", "rate_limits.login.per_minute"},
+		{"rate limit unknown field", "audit:\n", "rate_limits:\n  logout: {per_minute: 10, burst: 5}\naudit:\n", "logout"},
 		{"hsts negative", "  key_file: key.pem", "  key_file: key.pem\n  hsts_max_age: -1s", "tls.hsts_max_age"},
 		{"hsts not whole seconds", "  key_file: key.pem", "  key_file: key.pem\n  hsts_max_age: 1500ms", "tls.hsts_max_age"},
 		{"auth domain invalid", "  domain: auth.example.test", "  domain: auth.example.test:8443", "auth.domain"},

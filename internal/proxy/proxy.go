@@ -17,6 +17,7 @@ import (
 	"github.com/hersinabil5/warden/internal/identity"
 	"github.com/hersinabil5/warden/internal/pathnorm"
 	"github.com/hersinabil5/warden/internal/policy"
+	"github.com/hersinabil5/warden/internal/ratelimit"
 	"github.com/hersinabil5/warden/internal/session"
 )
 
@@ -108,9 +109,12 @@ type Handler struct {
 	jwks       http.Handler
 	audit      audit.Recorder
 	admin      *AdminRoute
-	hsts       string // Strict-Transport-Security value; "" for off
-	now        func() time.Time
-	logger     *slog.Logger
+	// Admin endpoint limits: per client IP before the session lookup, then
+	// per session (docs/DECISIONS.md D27).
+	adminIPLimit, adminSessionLimit *ratelimit.Limiter
+	hsts                            string // Strict-Transport-Security value; "" for off
+	now                             func() time.Time
+	logger                          *slog.Logger
 }
 
 // route is one configured host: its compiled policy and its reverse proxy.
@@ -152,6 +156,15 @@ func New(cfg *config.Config, opts Options) (*Handler, error) {
 	}
 	if h.now == nil {
 		h.now = time.Now
+	}
+	if h.admin != nil {
+		var err error
+		if h.adminIPLimit, err = newLimiter(cfg.RateLimits.AdminIP, config.DefaultAdminIPRate, h.now); err != nil {
+			return nil, fmt.Errorf("admin IP rate limit: %w", err)
+		}
+		if h.adminSessionLimit, err = newLimiter(cfg.RateLimits.AdminSession, config.DefaultAdminSessionRate, h.now); err != nil {
+			return nil, fmt.Errorf("admin session rate limit: %w", err)
+		}
 	}
 	cookies := newCookieMatcher(opts.CookieNames)
 	idHeaders := newIdentityHeaders(cfg.StripHeaders, cfg.Identity.Header)
@@ -409,6 +422,22 @@ func (h *Handler) serveAdmin(w http.ResponseWriter, r *http.Request, id string, 
 		}
 		admin.WriteError(w, code)
 	}
+	limited := func(l *ratelimit.Limiter, key, by string) bool {
+		ok, wait := l.Allow(key)
+		if ok {
+			return false
+		}
+		h.logger.Warn("rate limited", "request_id", id, "path", r.URL.Path, "by", by,
+			"client", ratelimit.ClientKey(r.RemoteAddr))
+		ae.deny("", "rate limited")
+		w.Header().Set("Retry-After", ratelimit.RetryAfterSeconds(wait))
+		fail(http.StatusTooManyRequests)
+		return true
+	}
+	// Before the session lookup, so a flood never reaches Redis.
+	if limited(h.adminIPLimit, ratelimit.ClientKey(r.RemoteAddr), "ip") {
+		return
+	}
 	sess, err := h.admin.Sessions.MainSession(r, id)
 	if err != nil {
 		h.logger.Error("loading admin session", "request_id", id, "err", err)
@@ -427,6 +456,9 @@ func (h *Handler) serveAdmin(w http.ResponseWriter, r *http.Request, id string, 
 		return
 	}
 	ae.subject(sess)
+	if limited(h.adminSessionLimit, sess.Hash, "session") {
+		return
+	}
 	d := h.admin.Policy.Evaluate(policy.Input{Path: r.URL.Path, Subject: subject(sess), Now: h.now()})
 	ae.deny(d.Rule, d.Reason)
 	if !d.Allow {
@@ -483,4 +515,13 @@ func (h *Handler) upstreamError(w http.ResponseWriter, r *http.Request, host str
 	}
 	h.logger.Log(r.Context(), level, "upstream error", "request_id", id, "host", host, "err", err)
 	writePage(w, http.StatusBadGateway, id)
+}
+
+// newLimiter builds a limiter from a configured rate; nil (a config that
+// skipped validation) gets the default, never no limit.
+func newLimiter(rate *config.RateLimit, def config.RateLimit, now func() time.Time) (*ratelimit.Limiter, error) {
+	if rate != nil {
+		def = *rate
+	}
+	return ratelimit.New(ratelimit.Limit(def), ratelimit.DefaultMaxKeys, now)
 }

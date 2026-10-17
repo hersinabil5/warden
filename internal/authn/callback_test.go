@@ -59,6 +59,8 @@ func newFlowEnv(t *testing.T, mods ...func(*config.Config)) *flowEnv {
 		Auth:    auth,
 		Session: config.Session{CookieName: sessionCookie, AbsoluteTTL: 8 * time.Hour, IdleTimeout: time.Hour},
 		Routes:  []config.Route{{Host: "app.example.test"}, {Host: "other.example.test"}},
+		// Tests sign in many times from httptest's one client address.
+		RateLimits: config.RateLimits{Login: &config.RateLimit{PerMinute: 100_000, Burst: 10_000}},
 	}
 	for _, m := range mods {
 		m(cfg)

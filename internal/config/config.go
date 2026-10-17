@@ -11,16 +11,17 @@ import (
 // Config is the full Warden configuration. Fields tagged yaml:"-" are derived
 // during Parse and cannot be set from the file.
 type Config struct {
-	Listen             string   `yaml:"listen"`
-	HTTPRedirectListen string   `yaml:"http_redirect_listen"` // optional; empty disables it
-	TLS                TLS      `yaml:"tls"`
-	Auth               Auth     `yaml:"auth"`
-	Session            Session  `yaml:"session"`
-	Identity           Identity `yaml:"identity"`
-	StripHeaders       []string `yaml:"strip_headers"` // extra headers to strip; canonicalized
-	Audit              Audit    `yaml:"audit"`
-	Admin              *Admin   `yaml:"admin"` // optional; nil turns the admin API off
-	Routes             []Route  `yaml:"routes"`
+	Listen             string     `yaml:"listen"`
+	HTTPRedirectListen string     `yaml:"http_redirect_listen"` // optional; empty disables it
+	TLS                TLS        `yaml:"tls"`
+	Auth               Auth       `yaml:"auth"`
+	Session            Session    `yaml:"session"`
+	Identity           Identity   `yaml:"identity"`
+	StripHeaders       []string   `yaml:"strip_headers"` // extra headers to strip; canonicalized
+	RateLimits         RateLimits `yaml:"rate_limits"`   // optional; unset limits use the defaults
+	Audit              Audit      `yaml:"audit"`
+	Admin              *Admin     `yaml:"admin"` // optional; nil turns the admin API off
+	Routes             []Route    `yaml:"routes"`
 }
 
 type TLS struct {
@@ -69,6 +70,28 @@ type Audit struct {
 	Sink string `yaml:"sink"` // "file" or "stdout"
 	File string `yaml:"file"` // required for, and only allowed with, sink: file
 }
+
+// RateLimits bound requests per client IP to the login and callback
+// endpoints, and per IP and per session to the admin API. They cannot be
+// turned off; unset ones are filled in with the defaults during Parse.
+type RateLimits struct {
+	Login        *RateLimit `yaml:"login"`         // per IP: /.warden/login and /.warden/callback
+	AdminIP      *RateLimit `yaml:"admin_ip"`      // per IP: admin API and dashboard, before the session lookup
+	AdminSession *RateLimit `yaml:"admin_session"` // per signed-in session: admin API and dashboard
+}
+
+// RateLimit is a token bucket: a sustained rate and the burst allowed on top.
+type RateLimit struct {
+	PerMinute int `yaml:"per_minute"`
+	Burst     int `yaml:"burst"`
+}
+
+// Defaults for RateLimits. A full login is a login plus a callback request.
+var (
+	DefaultLoginRate        = RateLimit{PerMinute: 20, Burst: 10}
+	DefaultAdminIPRate      = RateLimit{PerMinute: 120, Burst: 30}
+	DefaultAdminSessionRate = RateLimit{PerMinute: 60, Burst: 20}
+)
 
 // Admin is who may use the admin API and dashboard on the auth host. Every
 // rule must name users or groups and require recent MFA.

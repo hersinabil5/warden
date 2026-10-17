@@ -44,7 +44,9 @@ func newLoginEnv(t *testing.T, listen string) loginEnv {
 	mr := miniredis.RunT(t)
 	rdb := session.NewClient(mr.Addr())
 	t.Cleanup(func() { _ = rdb.Close() })
-	h, err := NewHandler(&config.Config{Listen: listen, Auth: auth, Routes: []config.Route{{Host: "app.example.test"}}}, p, HandlerOptions{
+	cfg := &config.Config{Listen: listen, Auth: auth, Routes: []config.Route{{Host: "app.example.test"}},
+		RateLimits: config.RateLimits{Login: &config.RateLimit{PerMinute: 100_000, Burst: 10_000}}}
+	h, err := NewHandler(cfg, p, HandlerOptions{
 		CookieKey: key,
 		Sessions:  session.NewStore(rdb, session.Options{AbsoluteTTL: time.Hour, IdleTimeout: time.Hour}),
 		Logger:    opts.Logger,

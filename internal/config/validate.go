@@ -54,6 +54,7 @@ func (c *Config) validate(getenv func(string) string) error {
 		}
 		c.StripHeaders[i] = http.CanonicalHeaderKey(h)
 	}
+	c.validateRateLimits(&p)
 	c.validateAudit(&p)
 	c.validateAdmin(&p)
 	c.validateRoutes(&p)
@@ -91,6 +92,35 @@ func (c *Config) validateHSTS(p *problems) {
 		p.addf("tls.hsts_max_age", "must not be negative")
 	case *d%time.Second != 0:
 		p.addf("tls.hsts_max_age", "must be whole seconds")
+	}
+}
+
+// maxRatePerMinute keeps rates in a range where the limiter's arithmetic is
+// exact and a typo (an extra zero or three) is caught.
+const maxRatePerMinute = 1_000_000
+
+func (c *Config) validateRateLimits(p *problems) {
+	for _, l := range []struct {
+		field string
+		limit **RateLimit
+		def   RateLimit
+	}{
+		{"rate_limits.login", &c.RateLimits.Login, DefaultLoginRate},
+		{"rate_limits.admin_ip", &c.RateLimits.AdminIP, DefaultAdminIPRate},
+		{"rate_limits.admin_session", &c.RateLimits.AdminSession, DefaultAdminSessionRate},
+	} {
+		if *l.limit == nil {
+			def := l.def // a copy: callers must not be able to change the default
+			*l.limit = &def
+			continue
+		}
+		r := **l.limit
+		if r.PerMinute < 1 || r.PerMinute > maxRatePerMinute {
+			p.addf(l.field+".per_minute", "must be between 1 and %d", maxRatePerMinute)
+		}
+		if r.Burst < 1 || r.Burst > maxRatePerMinute {
+			p.addf(l.field+".burst", "must be between 1 and %d", maxRatePerMinute)
+		}
 	}
 }
 

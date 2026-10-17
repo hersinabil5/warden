@@ -23,6 +23,7 @@ var pageMessages = map[int]string{
 	http.StatusNotFound:            "There is nothing here.",
 	http.StatusMethodNotAllowed:    "That method is not allowed here.",
 	http.StatusMisdirectedRequest:  "This connection cannot serve that host.",
+	http.StatusTooManyRequests:     "Too many requests. Wait a moment and try again.",
 	http.StatusBadGateway:          "The application is unavailable. Try again shortly.",
 	http.StatusInternalServerError: "Something went wrong.",
 }

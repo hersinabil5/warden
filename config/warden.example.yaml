@@ -36,6 +36,11 @@ identity:
 strip_headers:            # in addition to the built-in list
   - X-Remote-User
 
+rate_limits:                             # optional; always on, these are the defaults
+  login: {per_minute: 20, burst: 10}     # per client IP: login + callback share one bucket
+  admin_ip: {per_minute: 120, burst: 30} # per client IP, admin API + dashboard, before the session lookup
+  admin_session: {per_minute: 60, burst: 20}  # per signed-in session, admin API + dashboard
+
 audit:
   sink: file              # file (JSON lines, appended, 0600) | stdout; startup fails if the file can't be opened
   file: var/audit.jsonl

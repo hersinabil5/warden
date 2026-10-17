@@ -681,3 +681,40 @@ the generic error page could be framed (`default-src` does not cover `frame-ance
 **Consequences:** A browser that has seen a Warden host keeps using HTTPS for it for a year. If a
 deployment ever has to serve plain HTTP on that name, it must first ship `hsts_max_age: 0s` and
 wait out the old max-age.
+
+## D27: Rate limiting
+
+**Context:** Login and callback each cost the IdP a round trip (the callback a code exchange), and
+the admin API reads Redis on every request. Without limits, one client can flood both.
+
+**Decision:**
+- **Token buckets, in memory, per process** (`internal/ratelimit`): a sustained rate per minute
+  plus a burst. A small hand-written limiter instead of `golang.org/x/time/rate`, which has no
+  keyed table or eviction (the part that matters here) and would be a new dependency. The bucket
+  math is a few lines; no cryptography is involved.
+- **What is limited, and by what:**
+  - `/.warden/login` and `/.warden/callback`, per client IP, one shared bucket (a full login uses
+    one of each). Default 20/min, burst 10. Checked before any other work, so a limited callback
+    never reaches the token endpoint or the session store.
+  - Admin API and dashboard, per client IP before the session lookup (default 120/min, burst 30),
+    so a flood never reaches Redis; then per signed-in session (default 60/min, burst 20), so a
+    stolen admin cookie can't be used at full speed from many addresses.
+  - Not limited: the app routes (apps have their own capacity concerns; Warden's job there is
+    access control), the handshake (single-use 256-bit codes, nothing to guess), healthz, JWKS.
+- **Client identity is `RemoteAddr` only.** Warden is the edge; `X-Forwarded-For` and friends are
+  written by the client and never consulted. IPv6 clients are grouped by /64, the usual
+  allocation to one subscriber, so rotating addresses within it doesn't help.
+- **Bounded memory:** at most 10,000 keys per limiter, least recently used evicted first. An
+  attacker who wants their own empty bucket evicted must outpace 10,000 other clients, at which
+  point they have that many addresses anyway.
+- **Response:** `429` with `Retry-After` (whole seconds, rounded up): the generic page for login
+  and the dashboard, the JSON error for the API. Admin 429s are audited as a deny with reason
+  `rate limited`; every 429 is logged with the client key (an IP is not a secret).
+- **Always on.** `rate_limits` in the config tunes the three limits (validated, 1 to 1,000,000);
+  there is no off switch. Unset limits get the defaults.
+
+**Consequences:** Limits are per Warden process; several instances behind a load balancer would
+each allow the full rate (M8 would move the buckets to Redis). Many users behind one NAT share a
+login bucket; burst 10 covers a few people signing in at once. In the local Docker stack, Docker's
+port proxy can make every local client appear as the bridge gateway address, so they share one
+bucket; that's harmless in dev, and published ports on a public host keep real client addresses.

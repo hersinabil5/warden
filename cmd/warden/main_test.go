@@ -36,6 +36,7 @@ import (
 
 	"github.com/hersinabil5/warden/internal/admin"
 	"github.com/hersinabil5/warden/internal/authn/testidp"
+	"github.com/hersinabil5/warden/internal/config"
 	"github.com/hersinabil5/warden/internal/identity"
 )
 
@@ -1126,5 +1127,25 @@ func TestRunAssertsIdentityEndToEnd(t *testing.T) {
 		if id.Username != "alice" || id.Subject != "user-1" {
 			t.Errorf("identity = %+v", id)
 		}
+	}
+}
+
+// Login is rate limited per client by default (burst 10), through the real
+// listener and the client's real address.
+func TestRunRateLimitsLogin(t *testing.T) {
+	env := newTestEnv(t, minimalConfig)
+	startRun(t, "-config", env.path)
+	c := clientFor(env.httpsAddr, env.pool)
+	for i := range config.DefaultLoginRate.Burst {
+		if resp := get(t, c, "https://auth.example.test/.warden/login"); resp.StatusCode != http.StatusFound {
+			t.Fatalf("login %d: status %d, want 302", i+1, resp.StatusCode)
+		}
+	}
+	resp := get(t, c, "https://auth.example.test/.warden/login")
+	if resp.StatusCode != http.StatusTooManyRequests || resp.Header.Get("Retry-After") == "" {
+		t.Errorf("login past the burst: status %d, Retry-After %q; want 429 with Retry-After", resp.StatusCode, resp.Header.Get("Retry-After"))
+	}
+	if resp.Header.Get("Strict-Transport-Security") == "" || resp.Header.Get("X-Frame-Options") != "DENY" {
+		t.Error("429 page lacks the security headers")
 	}
 }

@@ -15,6 +15,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/hersinabil5/warden/internal/config"
+	"github.com/hersinabil5/warden/internal/ratelimit"
 	"github.com/hersinabil5/warden/internal/session"
 )
 
@@ -55,6 +56,9 @@ type Handler struct {
 	// formAction is the CSP form-action for pages with the logout form.
 	formAction string
 	sealer     *cookieSealer
+	// loginLimit bounds login and callback requests per client IP: each
+	// one costs the IdP a round trip or a code exchange.
+	loginLimit *ratelimit.Limiter
 	logger     *slog.Logger
 	errorPage  func(http.ResponseWriter, *http.Request, int)
 	now        func() time.Time
@@ -78,6 +82,14 @@ func NewHandler(cfg *config.Config, p *Provider, opts HandlerOptions) (*Handler,
 	sealer, err := newCookieSealer(opts.CookieKey, opts.Now)
 	if err != nil {
 		return nil, err
+	}
+	rate := config.DefaultLoginRate // config validation fills this in; never unlimited
+	if cfg.RateLimits.Login != nil {
+		rate = *cfg.RateLimits.Login
+	}
+	loginLimit, err := ratelimit.New(ratelimit.Limit(rate), ratelimit.DefaultMaxKeys, opts.Now)
+	if err != nil {
+		return nil, fmt.Errorf("authn: login rate limit: %w", err)
 	}
 	if opts.Logger == nil {
 		opts.Logger = slog.New(slog.DiscardHandler)
@@ -116,6 +128,7 @@ func NewHandler(cfg *config.Config, p *Provider, opts HandlerOptions) (*Handler,
 		authDomain:      cfg.Auth.Domain,
 		port:            port,
 		sealer:          sealer,
+		loginLimit:      loginLimit,
 		logger:          opts.Logger,
 		errorPage:       opts.ErrorPage,
 		now:             opts.Now,
@@ -169,11 +182,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	host := requestHost(r)
 	method := http.MethodGet
 	var serve http.HandlerFunc
+	limited := false
 	switch {
 	case host == h.authDomain && r.URL.Path == LoginPath:
-		serve = h.login
+		serve, limited = h.login, true
 	case host == h.authDomain && r.URL.Path == CallbackPath:
-		serve = h.callback
+		serve, limited = h.callback, true
 	case host == h.authDomain && r.URL.Path == SessionPath:
 		serve = h.sessionPage
 	case h.returns.hosts[host] && r.URL.Path == HandshakePath:
@@ -190,7 +204,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.errorPage(w, r, http.StatusMethodNotAllowed)
 		return
 	}
+	if limited && !h.allow(w, r) {
+		return
+	}
 	serve(w, r)
+}
+
+// allow spends a token from the client's login bucket. Over the limit it
+// writes a 429 with Retry-After and returns false.
+func (h *Handler) allow(w http.ResponseWriter, r *http.Request) bool {
+	client := ratelimit.ClientKey(r.RemoteAddr)
+	ok, wait := h.loginLimit.Allow(client)
+	if ok {
+		return true
+	}
+	h.logger.Warn("rate limited", "request_id", requestID(w), "path", r.URL.Path, "client", client)
+	w.Header().Set("Retry-After", ratelimit.RetryAfterSeconds(wait))
+	h.errorPage(w, r, http.StatusTooManyRequests)
+	return false
 }
 
 // login starts the authorization code flow: fresh state, nonce, and PKCE
