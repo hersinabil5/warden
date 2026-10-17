@@ -6,6 +6,7 @@ config/warden.dev.yaml
 web/admin/node_modules/
 web/admin/dist/*
 !web/admin/dist/.gitkeep
+web/admin/dist-showcase
 *.test
 *.out
 testdata/fuzz/**/corpus-tmp/

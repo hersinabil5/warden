@@ -1,4 +1,4 @@
-.PHONY: dev-up dev-down dev-up-host dev-logs dev-check certs internal-ca run upstream build web test lint fuzz
+.PHONY: dev-up dev-down dev-up-host dev-logs dev-check certs internal-ca run upstream build web showcase test lint fuzz
 
 -include .env
 export
@@ -75,6 +75,11 @@ build: web
 
 web:
 	cd web/admin && npm ci --no-audit --no-fund && npm run build
+
+# Static dashboard with sample data for Vercel (docs/SHOWCASE.md), in
+# web/admin/dist-showcase. Never embedded in the binary.
+showcase:
+	cd web/admin && npm ci --no-audit --no-fund && npm run build:showcase
 
 test:
 	go test -race ./...

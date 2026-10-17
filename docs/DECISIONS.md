@@ -829,3 +829,29 @@ each other's demo activity. A visitor whose IP changes mid-demo (mobile) loses s
 earlier sessions. Not covered here, and required before going public: the IdP must not let demo
 users change their password or OTP (no account console for them), and its demo data should be
 restored on the same schedule; that is deployment configuration for Keycloak, not Warden.
+
+## D31: Dashboard showcase build
+
+**Context:** The portfolio needs a link that always works, even when the live demo's server is
+down or out of capacity: the dashboard, with realistic data, as a static site on a free host.
+
+**Decision:**
+- **Same app, swapped transport at build time.** `vite build --mode showcase` aliases the API
+  transport (`src/backend.ts`) to `src/showcase/backend.ts`, which answers the same calls from
+  sample data in memory: alice signed in, a few sessions, the dev routes, and an audit log that
+  tells the story (cross-group 403s, path tricks rejected as `invalid path`, a step-up, an `h2c`
+  upgrade refused, a cross-origin WebSocket refused). Revocations work until a reload. The pages
+  and API types are shared, so the showcase can't drift from the real dashboard.
+- **Nothing of it in the binary.** The alias exists only in showcase mode and the banner sits
+  behind a constant (`import.meta.env.MODE`), so the embedded build has no sample code or data;
+  a Go test fails if the embedded files contain any showcase marker. A runtime flag was rejected:
+  it would ship made-up sessions in the binary, one bug away from being shown as real.
+- **Static and as strict as the real dashboard.** Base `/`, output `dist-showcase/` (gitignored),
+  hash routing so no rewrites are needed. `vercel.json` sends the same CSP (no inline code,
+  checked by the same test), `nosniff`, `no-referrer`, and `frame-ancestors 'none'` until a
+  specific site is allowed to embed it. Sample hosts use the reserved `.example` domain.
+- A banner says it's sample data and links to the source, and to the live demo when
+  `VITE_LIVE_DEMO_URL` is set at build time.
+
+**Consequences:** Two builds to keep green; `make showcase` builds the second, and its tests skip
+when it hasn't been built.

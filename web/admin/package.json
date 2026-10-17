@@ -4,7 +4,9 @@
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit && vite build && touch dist/.gitkeep",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:showcase": "tsc --noEmit && vite build --mode showcase",
+    "preview:showcase": "vite preview --mode showcase"
   },
   "dependencies": {
     "react": "19.3.1",

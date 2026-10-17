@@ -249,3 +249,22 @@ tr:last-child td {
 .notice {
   color: var(--allow);
 }
+
+.showcase {
+  padding: 0.6rem 1rem;
+  background: #fff8c5;
+  color: #3b2300;
+  border-bottom: 1px solid #d4a72c;
+  font-size: 0.9rem;
+}
+.showcase a {
+  color: inherit;
+  text-decoration: underline;
+}
+@media (prefers-color-scheme: dark) {
+  .showcase {
+    background: #3b2e00;
+    color: #f2e3b0;
+    border-color: #9e6a03;
+  }
+}

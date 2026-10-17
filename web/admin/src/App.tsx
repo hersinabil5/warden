@@ -7,6 +7,12 @@ import { RoutesPage } from "./pages/Routes";
 import { SessionsPage } from "./pages/Sessions";
 import { UserPage } from "./pages/User";
 
+// The showcase build (vite --mode showcase) runs on sample data; this is
+// constant-folded, so the embedded build carries none of it (D31).
+const SHOWCASE = import.meta.env.MODE === "showcase";
+const SOURCE_URL = "https://github.com/hersinabil5/warden";
+const LIVE_DEMO_URL = SHOWCASE ? (import.meta.env.VITE_LIVE_DEMO_URL ?? "") : "";
+
 const NAV = [
   ["sessions", "Sessions"],
   ["audit", "Audit log"],
@@ -26,6 +32,19 @@ export function App() {
 
   return (
     <div className="shell">
+      {SHOWCASE && (
+        <div className="showcase">
+          <strong>Showcase with sample data.</strong> This is Warden's admin dashboard running in your browser
+          with no server behind it: revoke sessions and filter the audit log, and reload to start over.{" "}
+          <a href={SOURCE_URL}>Source on GitHub</a>
+          {LIVE_DEMO_URL && (
+            <>
+              {" · "}
+              <a href={LIVE_DEMO_URL}>Try the live system</a>
+            </>
+          )}
+        </div>
+      )}
       <header className="top">
         <span className="brand">Warden admin</span>
         <nav>
@@ -35,7 +54,8 @@ export function App() {
             </a>
           ))}
         </nav>
-        {me && (
+        {me && SHOWCASE && <span className="who">{me.user}</span>}
+        {me && !SHOWCASE && (
           <form className="who" method="post" action="/.warden/logout">
             <span>{me.user}</span>
             <button type="submit" className="link">

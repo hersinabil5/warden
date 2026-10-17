@@ -3,6 +3,7 @@ package adminui
 import (
 	"errors"
 	"io/fs"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -21,9 +22,46 @@ var (
 // inlining fails here, not silently in the browser. Skipped when the
 // frontend hasn't been built (make build).
 func TestBuildHasNoInlineCode(t *testing.T) {
+	checkNoInlineCode(t, Files(), "make build")
+}
+
+// The showcase build is served under the same CSP on Vercel (D31). Skipped
+// unless it has been built (make showcase).
+func TestShowcaseBuildHasNoInlineCode(t *testing.T) {
+	checkNoInlineCode(t, os.DirFS("dist-showcase"), "make showcase")
+}
+
+// Sample data and the showcase banner exist only in the showcase build: the
+// binary must never show made-up sessions or decisions as if they were real.
+func TestEmbeddedBuildHasNoShowcaseData(t *testing.T) {
 	files := Files()
 	if _, err := fs.Stat(files, "index.html"); errors.Is(err, fs.ErrNotExist) {
 		t.Skip("dashboard not built; run make build")
+	}
+	err := fs.WalkDir(files, ".", func(name string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		b, err := fs.ReadFile(files, name)
+		if err != nil {
+			return err
+		}
+		for _, marker := range []string{"corp.example", "Showcase with sample data", "VITE_LIVE_DEMO_URL"} {
+			if strings.Contains(string(b), marker) {
+				t.Errorf("%s contains showcase content %q", name, marker)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func checkNoInlineCode(t *testing.T, files fs.FS, build string) {
+	t.Helper()
+	if _, err := fs.Stat(files, "index.html"); errors.Is(err, fs.ErrNotExist) {
+		t.Skip("not built; run " + build)
 	}
 	checked := 0
 	err := fs.WalkDir(files, ".", func(name string, d fs.DirEntry, err error) error {
